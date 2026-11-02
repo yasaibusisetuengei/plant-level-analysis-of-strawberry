@@ -54,7 +54,7 @@ def get_sample_image():
 
 # 条件①：サンプル画像を選択できるようにする
 use_sample = st.checkbox(
-    "🧪 サンプル画像（IMG_3714.tif）を使用して試す", value=False
+    "🧪 サンプル画像を使用して試す", value=False
 )
 
 if use_sample:
