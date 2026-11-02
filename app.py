@@ -51,9 +51,8 @@ if uploaded_file is not None:
 
     st.subheader("1. 株の範囲を指定する（手動補正可能）")
     st.markdown(
-        "1. 左側のツールバーで **「矩形（Rectangle）ツール」**（四角形のアイコン）を選択してください。\n"
-        "2. 画像上で各株をドラッグして囲んでください（位置や大きさは後から動かして微調整できます）。\n"
-        "3. 囲み終わったら、下にある **「🎯 囲んだ株の解析を実行」** ボタンを押してください。"
+        "- ツールバーの **「矩形（Rectangle）ツール」** を選択し、画像上で株を囲んでください。\n"
+        "- 描画後、四角形をクリックして**位置の移動、拡大・縮小、削除**による手動補正が可能です。"
     )
 
     # 画面幅に合わせてキャンバスの表示サイズを調整（最大幅 750px）
@@ -73,6 +72,10 @@ if uploaded_file is not None:
       with col2:
         stroke_width = st.slider("枠線の太さ", 1, 5, 2)
 
+    # セッションステートの初期化（描画データの維持用）
+    if "rects_data" not in st.session_state:
+      st.session_state["rects_data"] = []
+
     # Drawable Canvas の配置
     canvas_result = st_canvas(
         fill_color="rgba(0, 255, 0, 0.2)",
@@ -87,25 +90,27 @@ if uploaded_file is not None:
         key="canvas_strawberry",
     )
 
-    # JSONデータの抽出と保持
-    current_objects = []
+    # キャンバスからデータをリアルタイムに取得してセッションステートに蓄積
     if (
         canvas_result.json_data is not None
         and "objects" in canvas_result.json_data
     ):
-      current_objects = canvas_result.json_data["objects"]
+      objs = canvas_result.json_data["objects"]
+      valid_objs = [
+          obj
+          for obj in objs
+          if obj.get("type") == "rect"
+          or ("width" in obj and "height" in obj)
+      ]
+      st.session_state["rects_data"] = valid_objs
 
+    # -------------------------------------------------------------------------
+    # 解析結果およびダウンロードセクション
+    # -------------------------------------------------------------------------
     st.divider()
     st.subheader("2. 抽出・解析結果 ＆ ダウンロード")
 
-    # 解析実行ボタン
-    if st.button("🎯 囲んだ株の解析を実行する", type="primary"):
-      st.session_state["saved_rects"] = [
-          obj for obj in current_objects if obj.get("type") == "rect"
-      ]
-
-    # 保存された領域の取り出し
-    rects = st.session_state.get("saved_rects", [])
+    rects = st.session_state.get("rects_data", [])
 
     scale_x = img_width / canvas_width
     scale_y = img_height / canvas_height
@@ -137,7 +142,8 @@ if uploaded_file is not None:
         x2 = min(img_width, int(round(max(x_start, x_end) * scale_x)))
         y2 = min(img_height, int(round(max(y_start, y_end) * scale_y)))
 
-        if (x2 - x1) > 1 and (y2 - y1) > 1:
+        # わずかな誤タップを除外するため、幅・高さが一定以上あるものだけ処理
+        if (x2 - x1) > 2 and (y2 - y1) > 2:
           valid_crop_count += 1
           crop_name = f"strawberry_{valid_crop_count:03d}.png"
 
@@ -149,7 +155,7 @@ if uploaded_file is not None:
           # ② 該当部分を切り取り
           cropped_img = image.crop((x1, y1, x2, y2))
 
-          # NDVI計算
+          # NDVI計算（二値化画像評価）
           crop_gray = cropped_img.convert("L")
           crop_np = np.array(crop_gray)
 
@@ -187,19 +193,19 @@ if uploaded_file is not None:
 
     # テーブル表示
     if valid_crop_count > 0:
-      st.success(f"✅ {valid_crop_count} 株の領域を正常に抽出しました！")
+      st.success(f"✅ 検出・指定された株の数: **{valid_crop_count} 株**")
       df = pd.DataFrame(results)
       st.dataframe(df, use_container_width=True)
     else:
       st.info(
-          "👆 四角形で株を囲んだ後、「🎯 囲んだ株の解析を実行する」ボタンを押してください。"
+          "👆 画像上で株を四角形で囲むと、自動的に解析が行われここに表が表示されます。"
       )
 
     # ダウンロードボタン
     st.markdown(
         "📥 **ダウンロードZIPに含まれる内容**:\n"
-        "- `annotated_full_image.png` （枠線を描画した全体画像）\n"
-        f"- `strawberry_001.png` 〜 （個別の切り抜き画像：**計 {valid_crop_count} 枚**）"
+        "- `annotated_full_image.png` （四角形の枠を描画した全体の高解像度画像）\n"
+        f"- `strawberry_001.png` 〜 `strawberry_{valid_crop_count:03d}.png` （各四角形で切り抜いた個別画像：計 **{valid_crop_count}** 枚）"
     )
 
     zip_buffer.seek(0)
