@@ -17,11 +17,6 @@ st.markdown(
     "（PNG, JPG, TIF/TIFF形式）をアップロードしてください。"
 )
 
-# サイドバー設定
-st.sidebar.header("⚙️ 設定・ツール")
-stroke_color = st.sidebar.color_picker("枠線の色", "#00FF00")  # デフォルト：緑
-stroke_width = st.sidebar.slider("枠線の太さ", 1, 5, 2)
-
 # 画像アップロード（.tif, .tiffファイルに対応）
 uploaded_file = st.file_uploader(
     "二値化されたNDVI画像をアップロード", type=["png", "jpg", "jpeg", "tif", "tiff"]
@@ -46,7 +41,7 @@ if uploaded_file is not None:
       image = raw_image.convert("RGB")
 
     img_width, img_height = image.size
-    st.sidebar.success(f"画像読込成功 ({img_width} × {img_height} px)")
+    st.success(f"画像読込成功 ({img_width} × {img_height} px)")
 
     st.subheader("1. 株の範囲を指定する（手動補正可能）")
     st.markdown(
@@ -63,7 +58,15 @@ if uploaded_file is not None:
       canvas_width = img_width
       canvas_height = img_height
 
-    # Drawable Canvas の配置（point_radius引数を削除して修正）
+    # 画面下のアコーディオンによる設定（枠線の色・太さ）
+    with st.expander("⚙️ 描画設定（枠線の色や太さを変更する場合）"):
+      col1, col2 = st.columns(2)
+      with col1:
+        stroke_color = st.color_picker("枠線の色", "#00FF00")  # デフォルト：緑
+      with col2:
+        stroke_width = st.slider("枠線の太さ", 1, 5, 2)
+
+    # Drawable Canvas の配置（return_image_data=True で印付き画像を取得）
     canvas_result = st_canvas(
         fill_color="rgba(0, 255, 0, 0.2)",  # 半透明の塗りつぶし
         stroke_width=stroke_width,
@@ -73,6 +76,7 @@ if uploaded_file is not None:
         drawing_mode="rect",
         width=canvas_width,
         height=canvas_height,
+        return_image_data=True,
         key="canvas_strawberry",
     )
 
@@ -97,6 +101,27 @@ if uploaded_file is not None:
         with zipfile.ZipFile(
             zip_buffer, "w", zipfile.ZIP_DEFLATED
         ) as zip_file:
+          # ① 印（四角形の枠）をつけた全体の画像をZIPに追加
+          if canvas_result.image_data is not None:
+            canvas_img_array = canvas_result.image_data.astype(np.uint8)
+            annotated_img = Image.fromarray(
+                canvas_img_array, mode="RGBA"
+            ).convert("RGB")
+            # 元画像と同じ高解像度サイズにリサイズ
+            annotated_img_resized = annotated_img.resize(
+                (img_width, img_height), Image.Resampling.LANCZOS
+            )
+
+            annotated_byte_arr = io.BytesIO()
+            annotated_img_resized.save(
+                annotated_byte_arr, format="PNG"
+            )
+            annotated_byte_arr.seek(0)
+            zip_file.writestr(
+                "annotated_full_image.png", annotated_byte_arr.read()
+            )
+
+          # ② 囲んだ部分を個別に切り取ってZIPに追加
           for i, rect in enumerate(rects):
             rx = rect["left"] * scale_x
             ry = rect["top"] * scale_y
@@ -142,12 +167,13 @@ if uploaded_file is not None:
                   "平均NDVI指標": round(mean_intensity, 3),
               })
 
-              # 個別画像をメモリ上のZIPに追加
+              # 個別画像をZIP内のフォルダ（cropped_images/）に格納
               img_byte_arr = io.BytesIO()
               cropped_img.save(img_byte_arr, format="PNG")
               img_byte_arr.seek(0)
               zip_file.writestr(
-                  f"strawberry_{i+1:03d}_x{x1}_y{y1}.png", img_byte_arr.read()
+                  f"cropped_images/strawberry_{i+1:03d}_x{x1}_y{y1}.png",
+                  img_byte_arr.read(),
               )
 
         # 表形式で結果を表示
@@ -157,11 +183,16 @@ if uploaded_file is not None:
         # 3. ZIP一括ダウンロードボタン
         st.divider()
         st.subheader("3. 画像の一括ダウンロード")
+        st.markdown(
+            "ダウンロードされるZIPには以下のファイルが含まれます：\n"
+            "- **`annotated_full_image.png`** （四角形の枠をつけた全体の画像）\n"
+            "- **`cropped_images/` フォルダ** （切り抜かれた個別の株画像群）"
+        )
         zip_buffer.seek(0)
         st.download_button(
-            label="📦 切り抜いた株画像をZIPでダウンロード",
+            label="📦 印付き全体画像 ＆ 切り抜き画像をZIPで一括ダウンロード",
             data=zip_buffer,
-            file_name="strawberry_cropped_images.zip",
+            file_name="strawberry_ndvi_analysis_results.zip",
             mime="application/zip",
         )
       else:
@@ -176,10 +207,3 @@ else:
   st.info(
       "📂 アプリケーションを開始するには、二値化されたNDVI画像（PNG, JPG, TIF等）をアップロードしてください。"
   )
-
-# フッター
-st.markdown("---")
-st.markdown(
-    "**💡 修正点メモ**\n"
-    "- `st_canvas` から不適切な `point_radius` 引数を削除し、正常に動作するように修正しました。\n"
-)
