@@ -65,14 +65,16 @@ if uploaded_file is not None:
       canvas_height = img_height
 
     # 画面下のアコーディオンによる設定（枠線・塗りつぶしの色、太さ）
-    with st.expander("⚙️ 描画設定（枠線の色や太さを変更する場合）"):
+    with st.expander("⚙️ 描画設定（枠線の色や太さを変更する場合）", expanded=True):
       col1, col2 = st.columns(2)
       with col1:
         stroke_color = st.color_picker(
-            "枠線・塗りつぶしの色", "#00FF00"
-        )  # デフォルト：緑
+            "枠線・塗りつぶしの色", "#00FF00", key="stroke_color_picker"
+        )
       with col2:
-        stroke_width = st.slider("枠線の太さ", 1, 5, 2)
+        stroke_width = st.slider(
+            "枠線の太さ", 1, 5, 2, key="stroke_width_slider"
+        )
 
     # 選択された色をRGBに変換し、キャンバス用の半透明RGBAを作成
     rgb_color = hex_to_rgb(stroke_color)
@@ -82,7 +84,7 @@ if uploaded_file is not None:
     if "rects_data" not in st.session_state:
       st.session_state["rects_data"] = []
 
-    # Drawable Canvas の配置（fill_colorも動的に連動）
+    # Drawable Canvas の配置
     canvas_result = st_canvas(
         fill_color=fill_color_rgba,
         stroke_width=stroke_width,
@@ -157,16 +159,15 @@ if uploaded_file is not None:
           # ① オーバーレイに半透明の塗りつぶしと設定色の枠線を描画
           overlay_draw.rectangle(
               [x1, y1, x2, y2],
-              fill=rgb_color + (int(255 * 0.2),),  # 不透明度20%の塗りつぶし
-              outline=rgb_color + (255,),  # 選択された設定色の枠線
+              fill=rgb_color + (int(255 * 0.2),),
+              outline=rgb_color + (255,),
               width=stroke_width,
           )
 
-          # ② 株IDを5倍の大きさに描画
-          text_x = x1
-          text_y = max(0, y1 - 30)  # 枠の少し上に配置
+          # ② 株IDを四角形の真ん中（中心座標）に5倍の大きさで描画
+          center_x = (x1 + x2) // 2
+          center_y = (y1 + y2) // 2
 
-          # デフォルトフォントで文字を描画する小さな画像を作成し、5倍に拡大
           txt_w, txt_h = len(crop_id) * 6, 11
           txt_img = Image.new("RGBA", (txt_w, txt_h), (0, 0, 0, 0))
           txt_draw = ImageDraw.Draw(txt_img)
@@ -175,6 +176,11 @@ if uploaded_file is not None:
           scaled_txt = txt_img.resize(
               (txt_w * 5, txt_h * 5), Image.Resampling.NEAREST
           )
+          scaled_w, scaled_h = scaled_txt.size
+
+          text_x = center_x - scaled_w // 2
+          text_y = center_y - scaled_h // 2
+
           overlay.paste(scaled_txt, (text_x, text_y), scaled_txt)
 
           # ③ 該当部分を切り取り（元画像から）
@@ -238,7 +244,7 @@ if uploaded_file is not None:
     # ダウンロードボタン
     st.markdown(
         "📥 **ダウンロードZIPに含まれる内容**:\n"
-        "- `annotated_full_image.png` （設定色に連動した枠線・半透明塗りつぶし・5倍サイズの株ID入り全体画像）\n"
+        "- `annotated_full_image.png` （設定色に連動した枠線・半透明塗りつぶし・株の真ん中に5倍サイズの株ID入り全体画像）\n"
         "- `strawberry_analysis_results.csv` （株ごとの解析結果CSVデータ）\n"
         f"- `Strawberry_001.png` 〜 （各四角形で切り抜いた個別画像：計 **{valid_crop_count}** 枚）"
     )
