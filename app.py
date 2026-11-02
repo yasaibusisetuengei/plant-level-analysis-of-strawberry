@@ -95,14 +95,8 @@ if uploaded_file is not None:
     rects = []
     if canvas_result.json_data is not None:
       objects = canvas_result.json_data.get("objects", [])
-      # 有効な幅・高さを持つ四角形のみ抽出
-      rects = [
-          obj
-          for obj in objects
-          if obj.get("type") == "rect"
-          and obj.get("width", 0) > 0
-          and obj.get("height", 0) > 0
-      ]
+      # 矩形オブジェクトをすべて取得
+      rects = [obj for obj in objects if obj.get("type") == "rect"]
 
     scale_x = img_width / canvas_width
     scale_y = img_height / canvas_height
@@ -119,18 +113,24 @@ if uploaded_file is not None:
       valid_crop_count = 0
 
       for i, rect in enumerate(rects):
-        # キャンバス座標からのスケール変換
-        rx = rect["left"] * scale_x
-        ry = rect["top"] * scale_y
-        rw = rect["width"] * rect.get("scaleX", 1.0) * scale_x
-        rh = rect["height"] * rect.get("scaleY", 1.0) * scale_y
+        # 描画方向（右下から左上など）に関わらず正確な座標を算出するための処理
+        left = rect["left"]
+        top = rect["top"]
+        width = rect["width"] * rect.get("scaleX", 1.0)
+        height = rect["height"] * rect.get("scaleY", 1.0)
 
-        x1 = max(0, int(round(rx)))
-        y1 = max(0, int(round(ry)))
-        x2 = min(img_width, int(round(rx + rw)))
-        y2 = min(img_height, int(round(ry + rh)))
+        # 始点と終点を計算し、min/maxで正規化
+        x_start = left
+        y_start = top
+        x_end = left + width
+        y_end = top + height
 
-        # 正常な領域が切り出せる場合
+        x1 = max(0, int(round(min(x_start, x_end) * scale_x)))
+        y1 = max(0, int(round(min(y_start, y_end) * scale_y)))
+        x2 = min(img_width, int(round(max(x_start, x_end) * scale_x)))
+        y2 = min(img_height, int(round(max(y_start, y_end) * scale_y)))
+
+        # 有効な大きさの矩形である場合のみ処理
         if (x2 - x1) > 2 and (y2 - y1) > 2:
           valid_crop_count += 1
           crop_name = f"strawberry_{valid_crop_count:03d}.png"
@@ -173,7 +173,7 @@ if uploaded_file is not None:
           crop_byte_arr.seek(0)
           zip_file.writestr(crop_name, crop_byte_arr.read())
 
-      # ③ 全体枠付き画像をZIPに保存
+      # ③ 枠線を描画した全体の高解像度画像をZIPに追加
       annotated_byte_arr = io.BytesIO()
       annotated_img.save(annotated_byte_arr, format="PNG")
       annotated_byte_arr.seek(0)
