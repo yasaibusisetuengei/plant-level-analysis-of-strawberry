@@ -64,21 +64,27 @@ if uploaded_file is not None:
       canvas_width = img_width
       canvas_height = img_height
 
-    # 画面下のアコーディオンによる設定（枠線の色・太さ）
+    # 画面下のアコーディオンによる設定（枠線・塗りつぶしの色、太さ）
     with st.expander("⚙️ 描画設定（枠線の色や太さを変更する場合）"):
       col1, col2 = st.columns(2)
       with col1:
-        stroke_color = st.color_picker("枠線の色", "#00FF00")  # デフォルト：緑
+        stroke_color = st.color_picker(
+            "枠線・塗りつぶしの色", "#00FF00"
+        )  # デフォルト：緑
       with col2:
         stroke_width = st.slider("枠線の太さ", 1, 5, 2)
+
+    # 選択された色をRGBに変換し、キャンバス用の半透明RGBAを作成
+    rgb_color = hex_to_rgb(stroke_color)
+    fill_color_rgba = f"rgba({rgb_color[0]}, {rgb_color[1]}, {rgb_color[2]}, 0.2)"
 
     # セッションステートの初期化（描画データの維持用）
     if "rects_data" not in st.session_state:
       st.session_state["rects_data"] = []
 
-    # Drawable Canvas の配置
+    # Drawable Canvas の配置（fill_colorも動的に連動）
     canvas_result = st_canvas(
-        fill_color="rgba(0, 255, 0, 0.2)",
+        fill_color=fill_color_rgba,
         stroke_width=stroke_width,
         stroke_color=stroke_color,
         background_image=image,
@@ -118,16 +124,10 @@ if uploaded_file is not None:
     results = []
     zip_buffer = io.BytesIO()
 
-    # 全体画像コピー作成
-    annotated_img = image.copy()
-    draw = ImageDraw.Draw(annotated_img)
-    rgb_color = hex_to_rgb(stroke_color)
-
-    # フォントの読み込み（デフォルト）
-    try:
-      font = ImageFont.load_default()
-    except Exception:
-      font = None
+    # 全体画像コピー作成 (RGBAにして半透明合成の準備)
+    annotated_img = image.convert("RGBA")
+    overlay = Image.new("RGBA", annotated_img.size, (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay, "RGBA")
 
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
       valid_crop_count = 0
@@ -154,17 +154,30 @@ if uploaded_file is not None:
           crop_id = f"Strawberry_{valid_crop_count:03d}"
           crop_name = f"{crop_id}.png"
 
-          # ① 全体画像に枠を描画
-          draw.rectangle(
-              [x1, y1, x2, y2], outline=rgb_color, width=stroke_width
+          # ① オーバーレイに半透明の塗りつぶしと設定色の枠線を描画
+          overlay_draw.rectangle(
+              [x1, y1, x2, y2],
+              fill=rgb_color + (int(255 * 0.2),),  # 不透明度20%の塗りつぶし
+              outline=rgb_color + (255,),  # 選択された設定色の枠線
+              width=stroke_width,
           )
 
-          # ② 全体画像の枠の近くに株ID（テキスト）を描画
+          # ② 株IDを5倍の大きさに描画
           text_x = x1
-          text_y = max(0, y1 - 15)  # 枠の少し上に配置
-          draw.text((text_x, text_y), crop_id, fill=rgb_color, font=font)
+          text_y = max(0, y1 - 30)  # 枠の少し上に配置
 
-          # ③ 該当部分を切り取り
+          # デフォルトフォントで文字を描画する小さな画像を作成し、5倍に拡大
+          txt_w, txt_h = len(crop_id) * 6, 11
+          txt_img = Image.new("RGBA", (txt_w, txt_h), (0, 0, 0, 0))
+          txt_draw = ImageDraw.Draw(txt_img)
+          txt_draw.text((0, 0), crop_id, fill=rgb_color + (255,))
+
+          scaled_txt = txt_img.resize(
+              (txt_w * 5, txt_h * 5), Image.Resampling.NEAREST
+          )
+          overlay.paste(scaled_txt, (text_x, text_y), scaled_txt)
+
+          # ③ 該当部分を切り取り（元画像から）
           cropped_img = image.crop((x1, y1, x2, y2))
 
           # NDVI計算（二値化画像評価）
@@ -197,9 +210,12 @@ if uploaded_file is not None:
           crop_byte_arr.seek(0)
           zip_file.writestr(crop_name, crop_byte_arr.read())
 
-      # ④ 枠線とIDを描画した全体の高解像度画像をZIPに保存
+      # ④ オーバーレイを元画像と合成してRGBに変換し、ZIPに保存
+      final_annotated_img = Image.alpha_composite(
+          annotated_img, overlay
+      ).convert("RGB")
       annotated_byte_arr = io.BytesIO()
-      annotated_img.save(annotated_byte_arr, format="PNG")
+      final_annotated_img.save(annotated_byte_arr, format="PNG")
       annotated_byte_arr.seek(0)
       zip_file.writestr("annotated_full_image.png", annotated_byte_arr.read())
 
@@ -222,8 +238,8 @@ if uploaded_file is not None:
     # ダウンロードボタン
     st.markdown(
         "📥 **ダウンロードZIPに含まれる内容**:\n"
-        "- `annotated_full_image.png` （四角形の枠と株IDが書き込まれた全体画像）\n"
-        "- `strawberry_analysis_results.csv` （株ごとの解析結果データ）\n"
+        "- `annotated_full_image.png` （設定色に連動した枠線・半透明塗りつぶし・5倍サイズの株ID入り全体画像）\n"
+        "- `strawberry_analysis_results.csv` （株ごとの解析結果CSVデータ）\n"
         f"- `Strawberry_001.png` 〜 （各四角形で切り抜いた個別画像：計 **{valid_crop_count}** 枚）"
     )
 
