@@ -23,7 +23,6 @@ uploaded_file = st.file_uploader(
 )
 
 
-# HEXカラーコードをRGBタプルに変換するヘルパー関数
 def hex_to_rgb(hex_code):
   hex_code = hex_code.lstrip("#")
   return tuple(int(hex_code[i : i + 2], 16) for i in (0, 2, 4))
@@ -75,7 +74,7 @@ if uploaded_file is not None:
 
     # Drawable Canvas の配置
     canvas_result = st_canvas(
-        fill_color="rgba(0, 255, 0, 0.2)",  # 半透明の塗りつぶし
+        fill_color="rgba(0, 255, 0, 0.2)",
         stroke_width=stroke_width,
         stroke_color=stroke_color,
         background_image=image,
@@ -83,12 +82,12 @@ if uploaded_file is not None:
         drawing_mode="rect",
         width=canvas_width,
         height=canvas_height,
-        return_image_data=False,  # 元画像へ直接描画するためFalseに設定
+        return_image_data=False,
         key="canvas_strawberry",
     )
 
     # -------------------------------------------------------------------------
-    # 解析結果およびダウンロードセクション（常時表示）
+    # 解析結果およびダウンロードセクション
     # -------------------------------------------------------------------------
     st.divider()
     st.subheader("2. 抽出・解析結果 ＆ ダウンロード")
@@ -96,49 +95,59 @@ if uploaded_file is not None:
     rects = []
     if canvas_result.json_data is not None:
       objects = canvas_result.json_data.get("objects", [])
-      rects = [obj for obj in objects if obj["type"] == "rect"]
+      # 有効な幅・高さを持つ四角形のみ抽出
+      rects = [
+          obj
+          for obj in objects
+          if obj.get("type") == "rect"
+          and obj.get("width", 0) > 0
+          and obj.get("height", 0) > 0
+      ]
 
-    # キャンバス座標から元画像座標への変換スケール
     scale_x = img_width / canvas_width
     scale_y = img_height / canvas_height
 
     results = []
     zip_buffer = io.BytesIO()
 
-    # 元画像をコピーして、高解像度のまま直接四角形を描画する準備
+    # 全体画像コピー作成
     annotated_img = image.copy()
     draw = ImageDraw.Draw(annotated_img)
     rgb_color = hex_to_rgb(stroke_color)
 
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-      # 各四角形の座標計算と、元画像への直接描画・個別切り出し処理
+      valid_crop_count = 0
+
       for i, rect in enumerate(rects):
+        # キャンバス座標からのスケール変換
         rx = rect["left"] * scale_x
         ry = rect["top"] * scale_y
-        rw = rect["width"] * rect["scaleX"] * scale_x
-        rh = rect["height"] * rect["scaleY"] * scale_y
+        rw = rect["width"] * rect.get("scaleX", 1.0) * scale_x
+        rh = rect["height"] * rect.get("scaleY", 1.0) * scale_y
 
-        x1 = max(0, int(rx))
-        y1 = max(0, int(ry))
-        x2 = min(img_width, int(rx + rw))
-        y2 = min(img_height, int(ry + rh))
+        x1 = max(0, int(round(rx)))
+        y1 = max(0, int(round(ry)))
+        x2 = min(img_width, int(round(rx + rw)))
+        y2 = min(img_height, int(round(ry + rh)))
 
-        if x2 > x1 and y2 > y1:
-          # ① 元画像へ直接四角形の枠線を描画
-          draw.rectangle([x1, y1, x2, y2], outline=rgb_color, width=stroke_width)
+        # 正常な領域が切り出せる場合
+        if (x2 - x1) > 2 and (y2 - y1) > 2:
+          valid_crop_count += 1
+          crop_name = f"strawberry_{valid_crop_count:03d}.png"
 
-          # ② 個別画像の切り出し (Crop)
+          # ① 全体画像に枠を描画
+          draw.rectangle(
+              [x1, y1, x2, y2], outline=rgb_color, width=stroke_width
+          )
+
+          # ② 該当部分を切り取り
           cropped_img = image.crop((x1, y1, x2, y2))
 
-          # 囲んだ部分のNDVI指標計算
+          # NDVI計算（二値化画像評価）
           crop_gray = cropped_img.convert("L")
           crop_np = np.array(crop_gray)
 
-          if crop_np.max() > 1:
-            binary_crop = crop_np > 127
-          else:
-            binary_crop = crop_np > 0
-
+          binary_crop = crop_np > 127 if crop_np.max() > 1 else crop_np > 0
           total_pixels = binary_crop.size
           vegetation_pixels = np.sum(binary_crop)
           veg_ratio = (
@@ -147,7 +156,7 @@ if uploaded_file is not None:
           mean_intensity = np.mean(crop_np) / 255.0
 
           results.append({
-              "株ID": f"Strawberry_{i+1:03d}",
+              "株ID": f"Strawberry_{valid_crop_count:03d}",
               "X1": x1,
               "Y1": y1,
               "X2": x2,
@@ -158,46 +167,44 @@ if uploaded_file is not None:
               "平均NDVI指標": round(mean_intensity, 3),
           })
 
-          # 個別画像をZIP内のフォルダ（cropped_images/）に格納
-          img_byte_arr = io.BytesIO()
-          cropped_img.save(img_byte_arr, format="PNG")
-          img_byte_arr.seek(0)
-          zip_file.writestr(
-              f"cropped_images/strawberry_{i+1:03d}_x{x1}_y{y1}.png",
-              img_byte_arr.read(),
-          )
+          # 切り抜いた個別の株画像をZIP直下に保存
+          crop_byte_arr = io.BytesIO()
+          cropped_img.save(crop_byte_arr, format="PNG")
+          crop_byte_arr.seek(0)
+          zip_file.writestr(crop_name, crop_byte_arr.read())
 
-      # ③ 枠線を描画した全体の高解像度画像をZIPに追加
+      # ③ 全体枠付き画像をZIPに保存
       annotated_byte_arr = io.BytesIO()
       annotated_img.save(annotated_byte_arr, format="PNG")
       annotated_byte_arr.seek(0)
       zip_file.writestr("annotated_full_image.png", annotated_byte_arr.read())
 
-    # 解析結果の表表示（株がある場合のみ）
-    if len(rects) > 0:
-      st.write(f"検出・指定された株の数: **{len(rects)} 株**")
+    # テーブル表示
+    if valid_crop_count > 0:
+      st.write(f"検出・指定された株の数: **{valid_crop_count} 株**")
       df = pd.DataFrame(results)
       st.dataframe(df, use_container_width=True)
     else:
       st.info(
-          "👆 画像上で株を四角形で囲むと、ここに株ごとの解析結果（表）がリアルタイムに表示されます。"
+          "👆 画像上で株を四角形で囲むと、ここに株ごとの解析結果（表）が表示され、切り抜き画像がZIPに追加されます。"
       )
 
-    # 常にダウンロードボタンを表示
+    # ダウンロードボタン
     st.markdown(
-        "📥 **ダウンロード内容**:\n"
-        "- `annotated_full_image.png` （アップロード画像に四角形の枠を描写したもの）\n"
-        "- `cropped_images/` フォルダ （それぞれの四角で囲まれた部分を個別に切り取った画像群）"
+        "📥 **ダウンロードZIPに含まれるファイル**:\n"
+        "- `annotated_full_image.png` （四角形の枠を描画した全体の高解像度画像）\n"
+        f"- `strawberry_001.png` 〜 `strawberry_{valid_crop_count:03d}.png` （各四角形で切り抜いた個別画像：計 **{valid_crop_count}** 枚）"
     )
+
     zip_buffer.seek(0)
     st.download_button(
         label=(
-            "📦 印付き全体画像 ＆ 切り抜き画像をZIPで一括ダウンロード"
-            f" ({len(rects)}株選択中)"
+            f"📦 全体画像 ＆ 個別画像（{valid_crop_count}枚）をZIPでダウンロード"
         ),
         data=zip_buffer,
-        file_name="strawberry_ndvi_analysis_results.zip",
+        file_name="strawberry_cropped_images.zip",
         mime="application/zip",
+        key="download_zip_btn",
     )
 
   except Exception as e:
