@@ -32,8 +32,7 @@ if uploaded_file is not None:
     # 画像の読み込み
     raw_image = Image.open(uploaded_file)
 
-    # 【エラー対策】TIFや特殊なモード（16bit, float, パレット等）を
-    # st_canvasが扱える標準的な8bit RGB画像に安全に変換
+    # 16bitや浮動小数点型などの特殊なTIFを標準的な8bit RGBに変換
     if raw_image.mode in ["I", "I;16", "F"]:
       np_img = np.array(raw_image)
       if np_img.max() > np_img.min():
@@ -64,7 +63,7 @@ if uploaded_file is not None:
       canvas_width = img_width
       canvas_height = img_height
 
-    # Drawable Canvas の配置
+    # Drawable Canvas の配置（point_radius引数を削除して修正）
     canvas_result = st_canvas(
         fill_color="rgba(0, 255, 0, 0.2)",  # 半透明の塗りつぶし
         stroke_width=stroke_width,
@@ -72,7 +71,6 @@ if uploaded_file is not None:
         background_image=image,
         update_streamlit=True,
         drawing_mode="rect",
-        point_radius=2,
         width=canvas_width,
         height=canvas_height,
         key="canvas_strawberry",
@@ -182,7 +180,6 @@ else:
 # フッター
 st.markdown("---")
 st.markdown(
-    "**💡 変更・仕様メモ**\n"
-    "- **TIF対応**: `.tif` および `.tiff` 形式のアップロードに対応しました。\n"
-    "- **エラー防止**: 16bitや浮動小数点型のTIFF画像であっても、自動で標準的な8ビットRGBに変換して正常に表示・処理します。\n"
+    "**💡 修正点メモ**\n"
+    "- `st_canvas` から不適切な `point_radius` 引数を削除し、正常に動作するように修正しました。\n"
 )
