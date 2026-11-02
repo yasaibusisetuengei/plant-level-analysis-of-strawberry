@@ -2,7 +2,7 @@ import io
 import zipfile
 import numpy as np
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageDraw
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 
@@ -21,6 +21,13 @@ st.markdown(
 uploaded_file = st.file_uploader(
     "二値化されたNDVI画像をアップロード", type=["png", "jpg", "jpeg", "tif", "tiff"]
 )
+
+
+# HEXカラーコードをRGBタプルに変換するヘルパー関数
+def hex_to_rgb(hex_code):
+  hex_code = hex_code.lstrip("#")
+  return tuple(int(hex_code[i : i + 2], 16) for i in (0, 2, 4))
+
 
 if uploaded_file is not None:
   try:
@@ -76,7 +83,7 @@ if uploaded_file is not None:
         drawing_mode="rect",
         width=canvas_width,
         height=canvas_height,
-        return_image_data=True,
+        return_image_data=False,  # 元画像へ直接描画するためFalseに設定
         key="canvas_strawberry",
     )
 
@@ -91,33 +98,20 @@ if uploaded_file is not None:
       objects = canvas_result.json_data.get("objects", [])
       rects = [obj for obj in objects if obj["type"] == "rect"]
 
-    # ZIPバッファとデータフレームの準備
+    # キャンバス座標から元画像座標への変換スケール
+    scale_x = img_width / canvas_width
+    scale_y = img_height / canvas_height
+
     results = []
     zip_buffer = io.BytesIO()
 
+    # 元画像をコピーして、高解像度のまま直接四角形を描画する準備
+    annotated_img = image.copy()
+    draw = ImageDraw.Draw(annotated_img)
+    rgb_color = hex_to_rgb(stroke_color)
+
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-      # ① 印（四角形の枠）をつけた全体の画像をZIPに追加
-      if canvas_result.image_data is not None:
-        canvas_img_array = canvas_result.image_data.astype(np.uint8)
-        annotated_img = Image.fromarray(canvas_img_array, mode="RGBA").convert(
-            "RGB"
-        )
-        annotated_img_resized = annotated_img.resize(
-            (img_width, img_height), Image.Resampling.LANCZOS
-        )
-
-        annotated_byte_arr = io.BytesIO()
-        annotated_img_resized.save(annotated_byte_arr, format="PNG")
-        annotated_byte_arr.seek(0)
-        zip_file.writestr(
-            "annotated_full_image.png", annotated_byte_arr.read()
-        )
-
-      # キャンバス座標から元画像座標への変換スケール
-      scale_x = img_width / canvas_width
-      scale_y = img_height / canvas_height
-
-      # ② 囲んだ部分を個別に切り取ってZIPに追加
+      # 各四角形の座標計算と、元画像への直接描画・個別切り出し処理
       for i, rect in enumerate(rects):
         rx = rect["left"] * scale_x
         ry = rect["top"] * scale_y
@@ -130,8 +124,13 @@ if uploaded_file is not None:
         y2 = min(img_height, int(ry + rh))
 
         if x2 > x1 and y2 > y1:
+          # ① 元画像へ直接四角形の枠線を描画
+          draw.rectangle([x1, y1, x2, y2], outline=rgb_color, width=stroke_width)
+
+          # ② 個別画像の切り出し (Crop)
           cropped_img = image.crop((x1, y1, x2, y2))
 
+          # 囲んだ部分のNDVI指標計算
           crop_gray = cropped_img.convert("L")
           crop_np = np.array(crop_gray)
 
@@ -159,6 +158,7 @@ if uploaded_file is not None:
               "平均NDVI指標": round(mean_intensity, 3),
           })
 
+          # 個別画像をZIP内のフォルダ（cropped_images/）に格納
           img_byte_arr = io.BytesIO()
           cropped_img.save(img_byte_arr, format="PNG")
           img_byte_arr.seek(0)
@@ -166,6 +166,12 @@ if uploaded_file is not None:
               f"cropped_images/strawberry_{i+1:03d}_x{x1}_y{y1}.png",
               img_byte_arr.read(),
           )
+
+      # ③ 枠線を描画した全体の高解像度画像をZIPに追加
+      annotated_byte_arr = io.BytesIO()
+      annotated_img.save(annotated_byte_arr, format="PNG")
+      annotated_byte_arr.seek(0)
+      zip_file.writestr("annotated_full_image.png", annotated_byte_arr.read())
 
     # 解析結果の表表示（株がある場合のみ）
     if len(rects) > 0:
@@ -180,8 +186,8 @@ if uploaded_file is not None:
     # 常にダウンロードボタンを表示
     st.markdown(
         "📥 **ダウンロード内容**:\n"
-        "- `annotated_full_image.png` （四角形の枠をつけた全体の画像）\n"
-        "- `cropped_images/` フォルダ （切り抜かれた個別の株画像群 ※株を囲むと自動追加されます）"
+        "- `annotated_full_image.png` （アップロード画像に四角形の枠を描写したもの）\n"
+        "- `cropped_images/` フォルダ （それぞれの四角で囲まれた部分を個別に切り取った画像群）"
     )
     zip_buffer.seek(0)
     st.download_button(
