@@ -66,7 +66,7 @@ if uploaded_file is not None:
       with col2:
         stroke_width = st.slider("枠線の太さ", 1, 5, 2)
 
-    # Drawable Canvas の配置（return_image_data=True で印付き画像を取得）
+    # Drawable Canvas の配置
     canvas_result = st_canvas(
         fill_color="rgba(0, 255, 0, 0.2)",  # 半透明の塗りつぶし
         stroke_width=stroke_width,
@@ -80,125 +80,126 @@ if uploaded_file is not None:
         key="canvas_strawberry",
     )
 
-    # 描画された四角形（オブジェクト）の処理
+    # -------------------------------------------------------------------------
+    # 解析結果およびダウンロードセクション（常時表示）
+    # -------------------------------------------------------------------------
+    st.divider()
+    st.subheader("2. 抽出・解析結果 ＆ ダウンロード")
+
+    rects = []
     if canvas_result.json_data is not None:
       objects = canvas_result.json_data.get("objects", [])
       rects = [obj for obj in objects if obj["type"] == "rect"]
 
-      if len(rects) > 0:
-        st.divider()
-        st.subheader("2. 抽出・解析結果")
-        st.write(f"検出・指定された株の数: **{len(rects)} 株**")
+    if len(rects) > 0:
+      st.write(f"検出・指定された株の数: **{len(rects)} 株**")
 
-        # キャンバス座標から元画像座標への変換スケール
-        scale_x = img_width / canvas_width
-        scale_y = img_height / canvas_height
+      # キャンバス座標から元画像座標への変換スケール
+      scale_x = img_width / canvas_width
+      scale_y = img_height / canvas_height
 
-        results = []
-        zip_buffer = io.BytesIO()
+      results = []
+      zip_buffer = io.BytesIO()
 
-        # ZIPファイルの作成準備
-        with zipfile.ZipFile(
-            zip_buffer, "w", zipfile.ZIP_DEFLATED
-        ) as zip_file:
-          # ① 印（四角形の枠）をつけた全体の画像をZIPに追加
-          if canvas_result.image_data is not None:
-            canvas_img_array = canvas_result.image_data.astype(np.uint8)
-            annotated_img = Image.fromarray(
-                canvas_img_array, mode="RGBA"
-            ).convert("RGB")
-            # 元画像と同じ高解像度サイズにリサイズ
-            annotated_img_resized = annotated_img.resize(
-                (img_width, img_height), Image.Resampling.LANCZOS
+      # ZIPファイルの作成準備
+      with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        # ① 印（四角形の枠）をつけた全体の画像をZIPに追加
+        if canvas_result.image_data is not None:
+          canvas_img_array = canvas_result.image_data.astype(np.uint8)
+          annotated_img = Image.fromarray(canvas_img_array, mode="RGBA").convert(
+              "RGB"
+          )
+          annotated_img_resized = annotated_img.resize(
+              (img_width, img_height), Image.Resampling.LANCZOS
+          )
+
+          annotated_byte_arr = io.BytesIO()
+          annotated_img_resized.save(annotated_byte_arr, format="PNG")
+          annotated_byte_arr.seek(0)
+          zip_file.writestr(
+              "annotated_full_image.png", annotated_byte_arr.read()
+          )
+
+        # ② 囲んだ部分を個別に切り取ってZIPに追加
+        for i, rect in enumerate(rects):
+          rx = rect["left"] * scale_x
+          ry = rect["top"] * scale_y
+          rw = rect["width"] * rect["scaleX"] * scale_x
+          rh = rect["height"] * rect["scaleY"] * scale_y
+
+          x1 = max(0, int(rx))
+          y1 = max(0, int(ry))
+          x2 = min(img_width, int(rx + rw))
+          y2 = min(img_height, int(ry + rh))
+
+          if x2 > x1 and y2 > y1:
+            # 画像の切り出し (Crop)
+            cropped_img = image.crop((x1, y1, x2, y2))
+
+            # 囲んだ部分のNDVI指標計算
+            crop_gray = cropped_img.convert("L")
+            crop_np = np.array(crop_gray)
+
+            if crop_np.max() > 1:
+              binary_crop = crop_np > 127
+            else:
+              binary_crop = crop_np > 0
+
+            total_pixels = binary_crop.size
+            vegetation_pixels = np.sum(binary_crop)
+            veg_ratio = (
+                (vegetation_pixels / total_pixels) * 100
+                if total_pixels > 0
+                else 0
             )
+            mean_intensity = np.mean(crop_np) / 255.0
 
-            annotated_byte_arr = io.BytesIO()
-            annotated_img_resized.save(
-                annotated_byte_arr, format="PNG"
-            )
-            annotated_byte_arr.seek(0)
+            results.append({
+                "株ID": f"Strawberry_{i+1:03d}",
+                "X1": x1,
+                "Y1": y1,
+                "X2": x2,
+                "Y2": y2,
+                "幅 (px)": x2 - x1,
+                "高さ (px)": y2 - y1,
+                "植生ピクセル割合 (%)": round(veg_ratio, 2),
+                "平均NDVI指標": round(mean_intensity, 3),
+            })
+
+            # 個別画像をZIP内のフォルダ（cropped_images/）に格納
+            img_byte_arr = io.BytesIO()
+            cropped_img.save(img_byte_arr, format="PNG")
+            img_byte_arr.seek(0)
             zip_file.writestr(
-                "annotated_full_image.png", annotated_byte_arr.read()
+                f"cropped_images/strawberry_{i+1:03d}_x{x1}_y{y1}.png",
+                img_byte_arr.read(),
             )
 
-          # ② 囲んだ部分を個別に切り取ってZIPに追加
-          for i, rect in enumerate(rects):
-            rx = rect["left"] * scale_x
-            ry = rect["top"] * scale_y
-            rw = rect["width"] * rect["scaleX"] * scale_x
-            rh = rect["height"] * rect["scaleY"] * scale_y
+      # 表形式で結果を表示
+      df = pd.DataFrame(results)
+      st.dataframe(df, use_container_width=True)
 
-            x1 = max(0, int(rx))
-            y1 = max(0, int(ry))
-            x2 = min(img_width, int(rx + rw))
-            y2 = min(img_height, int(ry + rh))
+      # ZIP一括ダウンロードボタン
+      st.markdown(
+          "📥 **ダウンロード内容**:\n"
+          "- `annotated_full_image.png` （四角形の枠をつけた全体の画像）\n"
+          "- `cropped_images/` フォルダ （切り抜かれた個別の株画像群）"
+      )
+      zip_buffer.seek(0)
+      st.download_button(
+          label=(
+              "📦 印付き全体画像 ＆ 切り抜き画像をZIPで一括ダウンロード"
+              f" ({len(rects)}株)"
+          ),
+          data=zip_buffer,
+          file_name="strawberry_ndvi_analysis_results.zip",
+          mime="application/zip",
+      )
+    else:
+      st.info(
+          "👆 上の画像上で「矩形ツール」を選択し、解析したい株の範囲を四角形で囲むと、ここに解析結果とダウンロードボタンが表示されます。"
+      )
 
-            if x2 > x1 and y2 > y1:
-              # 画像の切り出し (Crop)
-              cropped_img = image.crop((x1, y1, x2, y2))
-
-              # 囲んだ部分のNDVI指標計算
-              crop_gray = cropped_img.convert("L")
-              crop_np = np.array(crop_gray)
-
-              if crop_np.max() > 1:
-                binary_crop = crop_np > 127
-              else:
-                binary_crop = crop_np > 0
-
-              total_pixels = binary_crop.size
-              vegetation_pixels = np.sum(binary_crop)
-              veg_ratio = (
-                  (vegetation_pixels / total_pixels) * 100
-                  if total_pixels > 0
-                  else 0
-              )
-              mean_intensity = np.mean(crop_np) / 255.0
-
-              results.append({
-                  "株ID": f"Strawberry_{i+1:03d}",
-                  "X1": x1,
-                  "Y1": y1,
-                  "X2": x2,
-                  "Y2": y2,
-                  "幅 (px)": x2 - x1,
-                  "高さ (px)": y2 - y1,
-                  "植生ピクセル割合 (%)": round(veg_ratio, 2),
-                  "平均NDVI指標": round(mean_intensity, 3),
-              })
-
-              # 個別画像をZIP内のフォルダ（cropped_images/）に格納
-              img_byte_arr = io.BytesIO()
-              cropped_img.save(img_byte_arr, format="PNG")
-              img_byte_arr.seek(0)
-              zip_file.writestr(
-                  f"cropped_images/strawberry_{i+1:03d}_x{x1}_y{y1}.png",
-                  img_byte_arr.read(),
-              )
-
-        # 表形式で結果を表示
-        df = pd.DataFrame(results)
-        st.dataframe(df, use_container_width=True)
-
-        # 3. ZIP一括ダウンロードボタン
-        st.divider()
-        st.subheader("3. 画像の一括ダウンロード")
-        st.markdown(
-            "ダウンロードされるZIPには以下のファイルが含まれます：\n"
-            "- **`annotated_full_image.png`** （四角形の枠をつけた全体の画像）\n"
-            "- **`cropped_images/` フォルダ** （切り抜かれた個別の株画像群）"
-        )
-        zip_buffer.seek(0)
-        st.download_button(
-            label="📦 印付き全体画像 ＆ 切り抜き画像をZIPで一括ダウンロード",
-            data=zip_buffer,
-            file_name="strawberry_ndvi_analysis_results.zip",
-            mime="application/zip",
-        )
-      else:
-        st.info(
-            "👆 画像上で「矩形ツール」を選択し、解析したい株の範囲を四角形で囲んでください。"
-        )
   except Exception as e:
     st.error(
         f"画像の読み込みまたは処理中にエラーが発生しました（ファイル形式をご確認ください）: {e}"
