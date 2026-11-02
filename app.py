@@ -51,8 +51,9 @@ if uploaded_file is not None:
 
     st.subheader("1. 株の範囲を指定する（手動補正可能）")
     st.markdown(
-        "- ツールバーの **「矩形（Rectangle）ツール」** を選択し、画像上で株を囲んでください。\n"
-        "- 描画後、四角形をクリックして**位置の移動、拡大・縮小、削除**による手動補正が可能です。"
+        "1. 左側のツールバーで **「矩形（Rectangle）ツール」**（四角形のアイコン）を選択してください。\n"
+        "2. 画像上で各株をドラッグして囲んでください（位置や大きさは後から動かして微調整できます）。\n"
+        "3. 囲み終わったら、下にある **「🎯 囲んだ株の解析を実行」** ボタンを押してください。"
     )
 
     # 画面幅に合わせてキャンバスの表示サイズを調整（最大幅 750px）
@@ -86,17 +87,25 @@ if uploaded_file is not None:
         key="canvas_strawberry",
     )
 
-    # -------------------------------------------------------------------------
-    # 解析結果およびダウンロードセクション
-    # -------------------------------------------------------------------------
+    # JSONデータの抽出と保持
+    current_objects = []
+    if (
+        canvas_result.json_data is not None
+        and "objects" in canvas_result.json_data
+    ):
+      current_objects = canvas_result.json_data["objects"]
+
     st.divider()
     st.subheader("2. 抽出・解析結果 ＆ ダウンロード")
 
-    rects = []
-    if canvas_result.json_data is not None:
-      objects = canvas_result.json_data.get("objects", [])
-      # 矩形オブジェクトをすべて取得
-      rects = [obj for obj in objects if obj.get("type") == "rect"]
+    # 解析実行ボタン
+    if st.button("🎯 囲んだ株の解析を実行する", type="primary"):
+      st.session_state["saved_rects"] = [
+          obj for obj in current_objects if obj.get("type") == "rect"
+      ]
+
+    # 保存された領域の取り出し
+    rects = st.session_state.get("saved_rects", [])
 
     scale_x = img_width / canvas_width
     scale_y = img_height / canvas_height
@@ -113,13 +122,11 @@ if uploaded_file is not None:
       valid_crop_count = 0
 
       for i, rect in enumerate(rects):
-        # 描画方向（右下から左上など）に関わらず正確な座標を算出するための処理
-        left = rect["left"]
-        top = rect["top"]
-        width = rect["width"] * rect.get("scaleX", 1.0)
-        height = rect["height"] * rect.get("scaleY", 1.0)
+        left = rect.get("left", 0)
+        top = rect.get("top", 0)
+        width = rect.get("width", 0) * rect.get("scaleX", 1.0)
+        height = rect.get("height", 0) * rect.get("scaleY", 1.0)
 
-        # 始点と終点を計算し、min/maxで正規化
         x_start = left
         y_start = top
         x_end = left + width
@@ -130,8 +137,7 @@ if uploaded_file is not None:
         x2 = min(img_width, int(round(max(x_start, x_end) * scale_x)))
         y2 = min(img_height, int(round(max(y_start, y_end) * scale_y)))
 
-        # 有効な大きさの矩形である場合のみ処理
-        if (x2 - x1) > 2 and (y2 - y1) > 2:
+        if (x2 - x1) > 1 and (y2 - y1) > 1:
           valid_crop_count += 1
           crop_name = f"strawberry_{valid_crop_count:03d}.png"
 
@@ -143,7 +149,7 @@ if uploaded_file is not None:
           # ② 該当部分を切り取り
           cropped_img = image.crop((x1, y1, x2, y2))
 
-          # NDVI計算（二値化画像評価）
+          # NDVI計算
           crop_gray = cropped_img.convert("L")
           crop_np = np.array(crop_gray)
 
@@ -167,13 +173,13 @@ if uploaded_file is not None:
               "平均NDVI指標": round(mean_intensity, 3),
           })
 
-          # 切り抜いた個別の株画像をZIP直下に保存
+          # 切り抜いた個別の株画像をZIPに保存
           crop_byte_arr = io.BytesIO()
           cropped_img.save(crop_byte_arr, format="PNG")
           crop_byte_arr.seek(0)
           zip_file.writestr(crop_name, crop_byte_arr.read())
 
-      # ③ 枠線を描画した全体の高解像度画像をZIPに追加
+      # ③ 枠線を描画した全体の高解像度画像をZIPに保存
       annotated_byte_arr = io.BytesIO()
       annotated_img.save(annotated_byte_arr, format="PNG")
       annotated_byte_arr.seek(0)
@@ -181,19 +187,19 @@ if uploaded_file is not None:
 
     # テーブル表示
     if valid_crop_count > 0:
-      st.write(f"検出・指定された株の数: **{valid_crop_count} 株**")
+      st.success(f"✅ {valid_crop_count} 株の領域を正常に抽出しました！")
       df = pd.DataFrame(results)
       st.dataframe(df, use_container_width=True)
     else:
       st.info(
-          "👆 画像上で株を四角形で囲むと、ここに株ごとの解析結果（表）が表示され、切り抜き画像がZIPに追加されます。"
+          "👆 四角形で株を囲んだ後、「🎯 囲んだ株の解析を実行する」ボタンを押してください。"
       )
 
     # ダウンロードボタン
     st.markdown(
-        "📥 **ダウンロードZIPに含まれるファイル**:\n"
-        "- `annotated_full_image.png` （四角形の枠を描画した全体の高解像度画像）\n"
-        f"- `strawberry_001.png` 〜 `strawberry_{valid_crop_count:03d}.png` （各四角形で切り抜いた個別画像：計 **{valid_crop_count}** 枚）"
+        "📥 **ダウンロードZIPに含まれる内容**:\n"
+        "- `annotated_full_image.png` （枠線を描画した全体画像）\n"
+        f"- `strawberry_001.png` 〜 （個別の切り抜き画像：**計 {valid_crop_count} 枚**）"
     )
 
     zip_buffer.seek(0)
