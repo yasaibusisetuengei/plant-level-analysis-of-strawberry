@@ -2,7 +2,7 @@ import io
 import zipfile
 import numpy as np
 import pandas as pd
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 
@@ -123,6 +123,12 @@ if uploaded_file is not None:
     draw = ImageDraw.Draw(annotated_img)
     rgb_color = hex_to_rgb(stroke_color)
 
+    # フォントの読み込み（デフォルト）
+    try:
+      font = ImageFont.load_default()
+    except Exception:
+      font = None
+
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
       valid_crop_count = 0
 
@@ -145,14 +151,20 @@ if uploaded_file is not None:
         # わずかな誤タップを除外するため、幅・高さが一定以上あるものだけ処理
         if (x2 - x1) > 2 and (y2 - y1) > 2:
           valid_crop_count += 1
-          crop_name = f"strawberry_{valid_crop_count:03d}.png"
+          crop_id = f"Strawberry_{valid_crop_count:03d}"
+          crop_name = f"{crop_id}.png"
 
           # ① 全体画像に枠を描画
           draw.rectangle(
               [x1, y1, x2, y2], outline=rgb_color, width=stroke_width
           )
 
-          # ② 該当部分を切り取り
+          # ② 全体画像の枠の近くに株ID（テキスト）を描画
+          text_x = x1
+          text_y = max(0, y1 - 15)  # 枠の少し上に配置
+          draw.text((text_x, text_y), crop_id, fill=rgb_color, font=font)
+
+          # ③ 該当部分を切り取り
           cropped_img = image.crop((x1, y1, x2, y2))
 
           # NDVI計算（二値化画像評価）
@@ -168,7 +180,7 @@ if uploaded_file is not None:
           mean_intensity = np.mean(crop_np) / 255.0
 
           results.append({
-              "株ID": f"Strawberry_{valid_crop_count:03d}",
+              "株ID": crop_id,
               "X1": x1,
               "Y1": y1,
               "X2": x2,
@@ -185,11 +197,17 @@ if uploaded_file is not None:
           crop_byte_arr.seek(0)
           zip_file.writestr(crop_name, crop_byte_arr.read())
 
-      # ③ 枠線を描画した全体の高解像度画像をZIPに保存
+      # ④ 枠線とIDを描画した全体の高解像度画像をZIPに保存
       annotated_byte_arr = io.BytesIO()
       annotated_img.save(annotated_byte_arr, format="PNG")
       annotated_byte_arr.seek(0)
       zip_file.writestr("annotated_full_image.png", annotated_byte_arr.read())
+
+      # ⑤ 解析結果の表をCSVファイルとしてZIPに保存
+      if len(results) > 0:
+        df_csv = pd.DataFrame(results)
+        csv_data = df_csv.to_csv(index=False).encode("utf-8-sig")
+        zip_file.writestr("strawberry_analysis_results.csv", csv_data)
 
     # テーブル表示
     if valid_crop_count > 0:
@@ -204,17 +222,18 @@ if uploaded_file is not None:
     # ダウンロードボタン
     st.markdown(
         "📥 **ダウンロードZIPに含まれる内容**:\n"
-        "- `annotated_full_image.png` （四角形の枠を描画した全体の高解像度画像）\n"
-        f"- `strawberry_001.png` 〜 `strawberry_{valid_crop_count:03d}.png` （各四角形で切り抜いた個別画像：計 **{valid_crop_count}** 枚）"
+        "- `annotated_full_image.png` （四角形の枠と株IDが書き込まれた全体画像）\n"
+        "- `strawberry_analysis_results.csv` （株ごとの解析結果データ）\n"
+        f"- `Strawberry_001.png` 〜 （各四角形で切り抜いた個別画像：計 **{valid_crop_count}** 枚）"
     )
 
     zip_buffer.seek(0)
     st.download_button(
         label=(
-            f"📦 全体画像 ＆ 個別画像（{valid_crop_count}枚）をZIPでダウンロード"
+            f"📦 全体画像・CSV・個別画像（{valid_crop_count}枚）をZIPでダウンロード"
         ),
         data=zip_buffer,
-        file_name="strawberry_cropped_images.zip",
+        file_name="strawberry_ndvi_analysis_results.zip",
         mime="application/zip",
         key="download_zip_btn",
     )
