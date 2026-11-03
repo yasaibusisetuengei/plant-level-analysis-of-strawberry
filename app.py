@@ -296,10 +296,6 @@ if uploaded_file is not None:
             st.success(f"✅ 検出・指定された株の数: **{valid_crop_count} 株**")
             df = pd.DataFrame(results)
             st.dataframe(df, use_container_width=True)
-        else:
-            st.info(
-                "👆 画像上で株を四角形で囲むと、自動的に解析が行われここに表が表示されます。"
-            )
 
         # ダウンロードボタン
         st.markdown(
@@ -324,7 +320,3 @@ if uploaded_file is not None:
         st.error(
             f"画像の読み込みまたは処理中にエラーが発生しました（ファイル形式をご確認ください）: {e}"
         )
-else:
-    st.info(
-        "📂 アプリケーションを開始するには、チェックボックスからサンプル画像を選択するか、二値化されたNDVI画像（PNG, JPG, TIF等）をアップロードしてください。"
-    )
