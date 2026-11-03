@@ -216,7 +216,7 @@ if uploaded_file is not None:
                         width=stroke_width,
                     )
 
-                    # ② 株IDを四角形の真ん中（中心座標）に5倍の大きさで描画
+                    # ② 株IDを四角形の真ん中（中心座標）に10倍の大きさで描画
                     center_x = (x1 + x2) // 2
                     center_y = (y1 + y2) // 2
 
@@ -228,7 +228,7 @@ if uploaded_file is not None:
                     txt_draw.text((0, 0), crop_id, fill=rect_rgb + (255,))
 
                     scaled_txt = txt_img.resize(
-                        (txt_w * 5, txt_h * 5), Image.Resampling.NEAREST
+                        (txt_w * 10, txt_h * 10), Image.Resampling.NEAREST
                     )
                     scaled_w, scaled_h = scaled_txt.size
 
