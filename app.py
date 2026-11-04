@@ -1,36 +1,12 @@
 import io
 import re
-import tempfile
+import urllib.request
 import zipfile
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
-
-# --- 互換性シム ---
-try:
-    import streamlit.elements.lib.image_utils as st_image_utils
-    if not hasattr(st_image_utils, "image_to_url"):
-        import streamlit.runtime.media_file_manager as media_file_manager
-        def image_to_url(image, width, clamp, channels, output_format, image_id):
-            return media_file_manager.media_file_manager.add(
-                image, mimetype=f"image/{output_format}"
-            )
-        st_image_utils.image_to_url = image_to_url
-except Exception:
-    try:
-        import streamlit.elements.image as st_image
-        if not hasattr(st_image, "image_to_url"):
-            import streamlit.runtime.media_file_manager as media_file_manager
-            def image_to_url(image, width, clamp, channels, output_format, image_id):
-                return media_file_manager.media_file_manager.add(
-                    image, mimetype=f"image/{output_format}"
-                )
-            st_image.image_to_url = image_to_url
-    except Exception:
-        pass
-# -----------------
 
 # ページの設定
 st.set_page_config(
@@ -40,7 +16,7 @@ st.set_page_config(
 st.title("🍓 イチゴの株検出・NDVI解析アプリ")
 st.markdown(
     "イチゴの畝を真上から撮影し、**NDVI値を抽出して二値化した画像**"
-    "（PNG, JPG, TIF/TIFF形式）をアップロードしてください。"
+    "（PNG, JPG, TIF/TIFF形式）をアップロードするか、サンプル画像でお試しください。"
 )
 
 
@@ -66,10 +42,33 @@ def parse_color_to_rgb(color_val, default_rgb):
     return default_rgb
 
 
-# 画像アップロード（.tif, .tiffファイルに対応）
-uploaded_file = st.file_uploader(
-    "二値化されたNDVI画像をアップロード", type=["png", "jpg", "jpeg", "tif", "tiff"]
+# サンプル画像のダウンロード用関数
+@st.cache_data
+def get_sample_image():
+    url = "https://github.com/yasaibusisetuengei/plant-level-analysis-of-strawberry/releases/download/sample/IMG_3714.tif"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req) as response:
+        image_bytes = response.read()
+    return io.BytesIO(image_bytes)
+
+
+# 条件①：サンプル画像を選択できるようにする
+use_sample = st.checkbox(
+    "🧪 サンプル画像を使用して試す", value=False
 )
+
+if use_sample:
+    try:
+        uploaded_file = get_sample_image()
+        st.info("💡 サンプル画像を読み込みました。")
+    except Exception as e:
+        st.error(f"サンプル画像のダウンロードに失敗しました: {e}")
+        uploaded_file = None
+else:
+    uploaded_file = st.file_uploader(
+        "二値化されたNDVI画像をアップロード",
+        type=["png", "jpg", "jpeg", "tif", "tiff"],
+    )
 
 if uploaded_file is not None:
     try:
@@ -79,12 +78,10 @@ if uploaded_file is not None:
         # 16bitや浮動小数点型などの特殊なTIFを標準的な8bit RGBに変換
         if raw_image.mode in ["I", "I;16", "F"]:
             np_img = np.array(raw_image)
-            img_min = float(np_img.min())
-            img_max = float(np_img.max())
-            if img_max > img_min:
+            if np_img.max() > np_img.min():
                 np_img = (
-                    (np_img - img_min)
-                    / (img_max - img_min)
+                    (np_img - np_img.min())
+                    / (np_img.max() - np_img.min())
                     * 255
                 ).astype(np.uint8)
             else:
@@ -98,8 +95,8 @@ if uploaded_file is not None:
 
         st.subheader("1. 株の範囲を指定する（手動補正可能）")
         st.markdown(
-            "- ツールバーの **「矩形（Rectangle）ツール」** を選択し、画像上で株を囲んでください。\n"
-            "- 描画後、四角形をクリックして**位置の移動、拡大・縮小、削除**による手動補正が可能です。"
+            "- マウスでドラックし、画像上で株を囲んでください。\n"
+            "- 描画後、画像の右上に表示されるアイコンから**元に戻す、修正、全印の削除**が可能です。"
         )
 
         # 画面幅に合わせてキャンバスの表示サイズを調整（最大幅 750px）
@@ -110,17 +107,6 @@ if uploaded_file is not None:
         else:
             canvas_width = img_width
             canvas_height = img_height
-
-        # キャンバス用にリサイズした背景画像を作成
-        canvas_bg_image = image.resize(
-            (canvas_width, canvas_height), Image.Resampling.LANCZOS
-        )
-
-        # Streamlit Cloud環境で確実に画像を表示するため、一時ファイルに保存してパスを渡す
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_file:
-            canvas_bg_image.save(tmp_file.format if hasattr(canvas_bg_image, 'format') and canvas_bg_image.format else "PNG")
-            canvas_bg_image.save(tmp_file.name, format="PNG")
-            bg_image_path = tmp_file.name
 
         # 画面下のアコーディオンによる設定（枠線・塗りつぶしの色、太さ）
         with st.expander(
@@ -146,16 +132,17 @@ if uploaded_file is not None:
         if "rects_data" not in st.session_state:
             st.session_state["rects_data"] = []
 
-        # Drawable Canvas の配置（背景に一時ファイルのパス文字列を渡す）
+        # Drawable Canvas の配置
         canvas_result = st_canvas(
             fill_color=fill_color_rgba,
             stroke_width=stroke_width,
             stroke_color=stroke_color,
-            background_image=bg_image_path,
+            background_image=image,
             update_streamlit=True,
             drawing_mode="rect",
             width=canvas_width,
             height=canvas_height,
+            return_image_data=False,
             key="canvas_strawberry",
         )
 
@@ -217,7 +204,7 @@ if uploaded_file is not None:
                     crop_id = f"Strawberry_{valid_crop_count:03d}"
                     crop_name = f"{crop_id}.png"
 
-                    # オブジェクトごとの描画色（途中で変更した色も含む）を正確に取得
+                    # 条件②：オブジェクトごとの描画色（途中で変更した色も含む）を正確に取得
                     obj_stroke = rect.get("stroke", stroke_color)
                     rect_rgb = parse_color_to_rgb(obj_stroke, rgb_color)
 
@@ -229,7 +216,7 @@ if uploaded_file is not None:
                         width=stroke_width,
                     )
 
-                    # ② 株IDを四角形の真ん中（中心座標）に5倍の大きさで描画
+                    # ② 株IDを四角形の真ん中（中心座標）に10倍の大きさで描画
                     center_x = (x1 + x2) // 2
                     center_y = (y1 + y2) // 2
 
@@ -241,7 +228,7 @@ if uploaded_file is not None:
                     txt_draw.text((0, 0), crop_id, fill=rect_rgb + (255,))
 
                     scaled_txt = txt_img.resize(
-                        (txt_w * 5, txt_h * 5), Image.Resampling.NEAREST
+                        (txt_w * 10, txt_h * 10), Image.Resampling.NEAREST
                     )
                     scaled_w, scaled_h = scaled_txt.size
 
@@ -256,10 +243,9 @@ if uploaded_file is not None:
                     # NDVI計算（二値化画像評価）
                     crop_gray = cropped_img.convert("L")
                     crop_np = np.array(crop_gray)
-                    crop_max = float(crop_np.max())
 
                     binary_crop = (
-                        crop_np > 127 if crop_max > 1 else crop_np > 0
+                        crop_np > 127 if crop_np.max() > 1 else crop_np > 0
                     )
                     total_pixels = binary_crop.size
                     vegetation_pixels = np.sum(binary_crop)
@@ -310,10 +296,6 @@ if uploaded_file is not None:
             st.success(f"✅ 検出・指定された株の数: **{valid_crop_count} 株**")
             df = pd.DataFrame(results)
             st.dataframe(df, use_container_width=True)
-        else:
-            st.info(
-                "👆 画像上で株を四角形で囲むと、自動的に解析が行われここに表が表示されます。"
-            )
 
         # ダウンロードボタン
         st.markdown(
@@ -338,7 +320,3 @@ if uploaded_file is not None:
         st.error(
             f"画像の読み込みまたは処理中にエラーが発生しました（ファイル形式をご確認ください）: {e}"
         )
-else:
-    st.info(
-        "📂 アプリケーションを開始するには、二値化されたNDVI画像（PNG, JPG, TIF等）をアップロードしてください。"
-    )
