@@ -7,6 +7,30 @@ from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 
+# --- 【重要】比較的新しい Streamlit との互換性シム（背景画像が表示されない問題の対策） ---
+try:
+    import streamlit.elements.lib.image_utils as st_image_utils
+    if not hasattr(st_image_utils, "image_to_url"):
+        import streamlit.runtime.media_file_manager as media_file_manager
+        def image_to_url(image, width, clamp, channels, output_format, image_id):
+            return media_file_manager.media_file_manager.add(
+                image, mimetype=f"image/{output_format}"
+            )
+        st_image_utils.image_to_url = image_to_url
+except Exception:
+    try:
+        import streamlit.elements.image as st_image
+        if not hasattr(st_image, "image_to_url"):
+            import streamlit.runtime.media_file_manager as media_file_manager
+            def image_to_url(image, width, clamp, channels, output_format, image_id):
+                return media_file_manager.media_file_manager.add(
+                    image, mimetype=f"image/{output_format}"
+                )
+            st_image.image_to_url = image_to_url
+    except Exception:
+        pass
+# ---------------------------------------------------------------------------------
+
 # ページの設定
 st.set_page_config(
     page_title="イチゴ株検出・NDVI解析アプリ", page_icon="🍓", layout="wide"
