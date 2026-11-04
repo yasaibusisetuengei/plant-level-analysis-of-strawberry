@@ -112,6 +112,11 @@ if uploaded_file is not None:
             canvas_width = img_width
             canvas_height = img_height
 
+        # キャンバス用にリサイズした背景画像を作成（描画・表示エラー防止）
+        canvas_bg_image = image.resize(
+            (canvas_width, canvas_height), Image.Resampling.LANCZOS
+        )
+
         # 画面下のアコーディオンによる設定（枠線・塗りつぶしの色、太さ）
         with st.expander(
             "⚙️ 描画設定（枠線の色や太さを変更する場合）", expanded=True
@@ -136,12 +141,12 @@ if uploaded_file is not None:
         if "rects_data" not in st.session_state:
             st.session_state["rects_data"] = []
 
-        # Drawable Canvas の配置（return_image_data 引数を削除）
+        # Drawable Canvas の配置（リサイズ済みの背景画像を渡す）
         canvas_result = st_canvas(
             fill_color=fill_color_rgba,
             stroke_width=stroke_width,
             stroke_color=stroke_color,
-            background_image=image,
+            background_image=canvas_bg_image,
             update_streamlit=True,
             drawing_mode="rect",
             width=canvas_width,
