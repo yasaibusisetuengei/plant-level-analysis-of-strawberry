@@ -16,7 +16,7 @@ st.set_page_config(
 st.title("🍓 イチゴの株検出・NDVI解析アプリ")
 st.markdown(
     "イチゴの畝を真上から撮影し、**NDVI値を抽出して二値化した画像**"
-    "（PNG, JPG, TIF/TIFF形式）をアップロードするか、サンプル画像でお試しください。"
+    "（PNG, JPG, TIF/TIFF形式）をアップロードするか、サンプル画像をお試しください。"
 )
 
 
@@ -42,27 +42,31 @@ def parse_color_to_rgb(color_val, default_rgb):
     return default_rgb
 
 
-# サンプル画像のダウンロード用関数
+# サンプル画像のダウンロード用関数（タイムアウト設定付き）
 @st.cache_data
 def get_sample_image():
     url = "https://github.com/yasaibusisetuengei/plant-level-analysis-of-strawberry/releases/download/sample/IMG_3714.tif"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req) as response:
-        image_bytes = response.read()
-    return io.BytesIO(image_bytes)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            image_bytes = response.read()
+        return io.BytesIO(image_bytes)
+    except Exception as e:
+        return None
 
 
-# 条件①：サンプル画像を選択できるようにする
+# サンプル画像を使用するチェックボックス
 use_sample = st.checkbox(
-    "🧪 サンプル画像を使用して試す", value=False
+    "🧪 サンプル画像（IMG_3714.tif）を使用して試す", value=False
 )
 
 if use_sample:
-    try:
-        uploaded_file = get_sample_image()
+    sample_io = get_sample_image()
+    if sample_io is not None:
+        uploaded_file = sample_io
         st.info("💡 サンプル画像を読み込みました。")
-    except Exception as e:
-        st.error(f"サンプル画像のダウンロードに失敗しました: {e}")
+    else:
+        st.error("サンプル画像のダウンロードに失敗しました。時間をおいて再度お試しください。")
         uploaded_file = None
 else:
     uploaded_file = st.file_uploader(
@@ -95,8 +99,8 @@ if uploaded_file is not None:
 
         st.subheader("1. 株の範囲を指定する（手動補正可能）")
         st.markdown(
-            "- マウスでドラックし、画像上で株を囲んでください。\n"
-            "- 描画後、画像の右上に表示されるアイコンから**元に戻す、修正、全印の削除**が可能です。"
+            "- ツールバーの **「矩形（Rectangle）ツール」** を選択し、画像上で株を囲んでください。\n"
+            "- 描画後、四角形をクリックして**位置の移動、拡大・縮小、削除**による手動補正が可能です。"
         )
 
         # 画面幅に合わせてキャンバスの表示サイズを調整（最大幅 750px）
@@ -132,7 +136,7 @@ if uploaded_file is not None:
         if "rects_data" not in st.session_state:
             st.session_state["rects_data"] = []
 
-        # Drawable Canvas の配置
+        # Drawable Canvas の配置（return_image_data 引数を削除）
         canvas_result = st_canvas(
             fill_color=fill_color_rgba,
             stroke_width=stroke_width,
@@ -142,7 +146,6 @@ if uploaded_file is not None:
             drawing_mode="rect",
             width=canvas_width,
             height=canvas_height,
-            return_image_data=False,
             key="canvas_strawberry",
         )
 
@@ -204,7 +207,7 @@ if uploaded_file is not None:
                     crop_id = f"Strawberry_{valid_crop_count:03d}"
                     crop_name = f"{crop_id}.png"
 
-                    # 条件②：オブジェクトごとの描画色（途中で変更した色も含む）を正確に取得
+                    # オブジェクトごとの描画色（途中で変更した色も含む）を正確に取得
                     obj_stroke = rect.get("stroke", stroke_color)
                     rect_rgb = parse_color_to_rgb(obj_stroke, rgb_color)
 
@@ -216,7 +219,7 @@ if uploaded_file is not None:
                         width=stroke_width,
                     )
 
-                    # ② 株IDを四角形の真ん中（中心座標）に10倍の大きさで描画
+                    # ② 株IDを四角形の真ん中（中心座標）に5倍の大きさで描画
                     center_x = (x1 + x2) // 2
                     center_y = (y1 + y2) // 2
 
@@ -228,7 +231,7 @@ if uploaded_file is not None:
                     txt_draw.text((0, 0), crop_id, fill=rect_rgb + (255,))
 
                     scaled_txt = txt_img.resize(
-                        (txt_w * 10, txt_h * 10), Image.Resampling.NEAREST
+                        (txt_w * 5, txt_h * 5), Image.Resampling.NEAREST
                     )
                     scaled_w, scaled_h = scaled_txt.size
 
@@ -296,6 +299,10 @@ if uploaded_file is not None:
             st.success(f"✅ 検出・指定された株の数: **{valid_crop_count} 株**")
             df = pd.DataFrame(results)
             st.dataframe(df, use_container_width=True)
+        else:
+            st.info(
+                "👆 画像上で株を四角形で囲むと、自動的に解析が行われここに表が表示されます。"
+            )
 
         # ダウンロードボタン
         st.markdown(
@@ -320,3 +327,7 @@ if uploaded_file is not None:
         st.error(
             f"画像の読み込みまたは処理中にエラーが発生しました（ファイル形式をご確認ください）: {e}"
         )
+else:
+    st.info(
+        "📂 アプリケーションを開始するには、チェックボックスからサンプル画像を選択するか、二値化されたNDVI画像（PNG, JPG, TIF等）をアップロードしてください。"
+    )
