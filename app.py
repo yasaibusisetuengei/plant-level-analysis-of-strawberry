@@ -110,10 +110,16 @@ if uploaded_file is not None:
             canvas_width = img_width
             canvas_height = img_height
 
-        # キャンバス用にリサイズした背景画像を作成（PIL Image形式）
+        # キャンバス用にリサイズした背景画像を作成
         canvas_bg_image = image.resize(
             (canvas_width, canvas_height), Image.Resampling.LANCZOS
         )
+
+        # 【修正】TIF形式等の画像をブラウザで確実に表示させるため、一度PNG形式に変換して読み込ませる
+        buf = io.BytesIO()
+        canvas_bg_image.save(buf, format="PNG")
+        buf.seek(0)
+        canvas_bg_render_image = Image.open(buf)
 
         # 画面下のアコーディオンによる設定（枠線・塗りつぶしの色、太さ）
         with st.expander(
@@ -139,12 +145,12 @@ if uploaded_file is not None:
         if "rects_data" not in st.session_state:
             st.session_state["rects_data"] = []
 
-        # Drawable Canvas の配置（背景にPIL Imageオブジェクトを渡す）
+        # Drawable Canvas の配置（変換済みのPNG画像を背景として渡す）
         canvas_result = st_canvas(
             fill_color=fill_color_rgba,
             stroke_width=stroke_width,
             stroke_color=stroke_color,
-            background_image=canvas_bg_image,
+            background_image=canvas_bg_render_image,
             update_streamlit=True,
             drawing_mode="rect",
             width=canvas_width,
