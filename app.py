@@ -1,5 +1,6 @@
 import io
 import re
+import tempfile
 import zipfile
 import numpy as np
 import pandas as pd
@@ -7,7 +8,7 @@ from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 
-# --- 互換性シム（背景画像が表示されない問題の対策） ---
+# --- 互換性シム ---
 try:
     import streamlit.elements.lib.image_utils as st_image_utils
     if not hasattr(st_image_utils, "image_to_url"):
@@ -29,7 +30,7 @@ except Exception:
             st_image.image_to_url = image_to_url
     except Exception:
         pass
-# ---------------------------------------------------------------------------------
+# -----------------
 
 # ページの設定
 st.set_page_config(
@@ -115,11 +116,11 @@ if uploaded_file is not None:
             (canvas_width, canvas_height), Image.Resampling.LANCZOS
         )
 
-        # 【修正】TIF形式等の画像をブラウザで確実に表示させるため、一度PNG形式に変換して読み込ませる
-        buf = io.BytesIO()
-        canvas_bg_image.save(buf, format="PNG")
-        buf.seek(0)
-        canvas_bg_render_image = Image.open(buf)
+        # Streamlit Cloud環境で確実に画像を表示するため、一時ファイルに保存してパスを渡す
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_file:
+            canvas_bg_image.save(tmp_file.format if hasattr(canvas_bg_image, 'format') and canvas_bg_image.format else "PNG")
+            canvas_bg_image.save(tmp_file.name, format="PNG")
+            bg_image_path = tmp_file.name
 
         # 画面下のアコーディオンによる設定（枠線・塗りつぶしの色、太さ）
         with st.expander(
@@ -145,12 +146,12 @@ if uploaded_file is not None:
         if "rects_data" not in st.session_state:
             st.session_state["rects_data"] = []
 
-        # Drawable Canvas の配置（変換済みのPNG画像を背景として渡す）
+        # Drawable Canvas の配置（背景に一時ファイルのパス文字列を渡す）
         canvas_result = st_canvas(
             fill_color=fill_color_rgba,
             stroke_width=stroke_width,
             stroke_color=stroke_color,
-            background_image=canvas_bg_render_image,
+            background_image=bg_image_path,
             update_streamlit=True,
             drawing_mode="rect",
             width=canvas_width,
