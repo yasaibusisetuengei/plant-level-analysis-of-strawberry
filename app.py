@@ -142,7 +142,6 @@ if uploaded_file is not None:
             drawing_mode="rect",
             width=canvas_width,
             height=canvas_height,
-            return_image_data=False,
             key="canvas_strawberry",
         )
 
