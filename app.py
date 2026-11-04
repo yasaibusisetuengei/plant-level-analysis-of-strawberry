@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw, ImageFont
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 
-# --- 【重要】比較的新しい Streamlit との互換性シム（背景画像が表示されない問題の対策） ---
+# --- 互換性シム（背景画像が表示されない問題の対策） ---
 try:
     import streamlit.elements.lib.image_utils as st_image_utils
     if not hasattr(st_image_utils, "image_to_url"):
@@ -108,10 +108,13 @@ if uploaded_file is not None:
             canvas_width = img_width
             canvas_height = img_height
 
-        # キャンバス用にリサイズした背景画像を作成（描画・表示エラー防止）
+        # キャンバス用にリサイズした背景画像を作成
         canvas_bg_image = image.resize(
             (canvas_width, canvas_height), Image.Resampling.LANCZOS
         )
+        
+        # 【修正点】キャンバスで確実に表示させるため、PIL ImageをNumPy配列に変換
+        canvas_bg_np = np.array(canvas_bg_image)
 
         # 画面下のアコーディオンによる設定（枠線・塗りつぶしの色、太さ）
         with st.expander(
@@ -137,12 +140,12 @@ if uploaded_file is not None:
         if "rects_data" not in st.session_state:
             st.session_state["rects_data"] = []
 
-        # Drawable Canvas の配置
+        # Drawable Canvas の配置（背景に NumPy配列 を渡す）
         canvas_result = st_canvas(
             fill_color=fill_color_rgba,
             stroke_width=stroke_width,
             stroke_color=stroke_color,
-            background_image=canvas_bg_image,
+            background_image=canvas_bg_np,
             update_streamlit=True,
             drawing_mode="rect",
             width=canvas_width,
