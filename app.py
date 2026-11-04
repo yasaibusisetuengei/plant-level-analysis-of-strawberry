@@ -78,10 +78,12 @@ if uploaded_file is not None:
         # 16bitや浮動小数点型などの特殊なTIFを標準的な8bit RGBに変換
         if raw_image.mode in ["I", "I;16", "F"]:
             np_img = np.array(raw_image)
-            if np_img.max() > np_img.min():
+            img_min = float(np_img.min())
+            img_max = float(np_img.max())
+            if img_max > img_min:
                 np_img = (
-                    (np_img - np_img.min())
-                    / (np_img.max() - np_img.min())
+                    (np_img - img_min)
+                    / (img_max - img_min)
                     * 255
                 ).astype(np.uint8)
             else:
@@ -108,13 +110,10 @@ if uploaded_file is not None:
             canvas_width = img_width
             canvas_height = img_height
 
-        # キャンバス用にリサイズした背景画像を作成
+        # キャンバス用にリサイズした背景画像を作成（PIL Image形式）
         canvas_bg_image = image.resize(
             (canvas_width, canvas_height), Image.Resampling.LANCZOS
         )
-        
-        # 【修正点】キャンバスで確実に表示させるため、PIL ImageをNumPy配列に変換
-        canvas_bg_np = np.array(canvas_bg_image)
 
         # 画面下のアコーディオンによる設定（枠線・塗りつぶしの色、太さ）
         with st.expander(
@@ -140,12 +139,12 @@ if uploaded_file is not None:
         if "rects_data" not in st.session_state:
             st.session_state["rects_data"] = []
 
-        # Drawable Canvas の配置（背景に NumPy配列 を渡す）
+        # Drawable Canvas の配置（背景にPIL Imageオブジェクトを渡す）
         canvas_result = st_canvas(
             fill_color=fill_color_rgba,
             stroke_width=stroke_width,
             stroke_color=stroke_color,
-            background_image=canvas_bg_np,
+            background_image=canvas_bg_image,
             update_streamlit=True,
             drawing_mode="rect",
             width=canvas_width,
@@ -250,9 +249,10 @@ if uploaded_file is not None:
                     # NDVI計算（二値化画像評価）
                     crop_gray = cropped_img.convert("L")
                     crop_np = np.array(crop_gray)
+                    crop_max = float(crop_np.max())
 
                     binary_crop = (
-                        crop_np > 127 if crop_np.max() > 1 else crop_np > 0
+                        crop_np > 127 if crop_max > 1 else crop_np > 0
                     )
                     total_pixels = binary_crop.size
                     vegetation_pixels = np.sum(binary_crop)
