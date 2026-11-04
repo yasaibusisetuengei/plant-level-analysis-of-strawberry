@@ -136,7 +136,7 @@ if uploaded_file is not None:
         if "rects_data" not in st.session_state:
             st.session_state["rects_data"] = []
 
-        # Drawable Canvas の配置
+        # Drawable Canvas の配置（return_image_data 引数を削除）
         canvas_result = st_canvas(
             fill_color=fill_color_rgba,
             stroke_width=stroke_width,
@@ -146,7 +146,6 @@ if uploaded_file is not None:
             drawing_mode="rect",
             width=canvas_width,
             height=canvas_height,
-            return_image_data=False,
             key="canvas_strawberry",
         )
 
