@@ -299,7 +299,7 @@ if uploaded_file is not None:
         # ダウンロードボタン
         st.markdown(
             "📥 **ダウンロードZIPに含まれる内容**:\n"
-            "- `annotated_full_image.png` （設定色に連動した枠線・半透明塗りつぶし・株の真ん中に5倍サイズの株ID入り全体画像）\n"
+            "- `annotated_full_image.png` （株ID入り全体画像）\n"
             "- `strawberry_analysis_results.csv` （株ごとの解析結果CSVデータ）\n"
             f"- `Strawberry_001.png` 〜 （各四角形で切り抜いた個別画像：計 **{valid_crop_count}** 枚）"
         )
