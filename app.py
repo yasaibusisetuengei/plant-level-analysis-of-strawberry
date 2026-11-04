@@ -1,6 +1,5 @@
 import io
 import re
-import urllib.request
 import zipfile
 import numpy as np
 import pandas as pd
@@ -16,7 +15,7 @@ st.set_page_config(
 st.title("🍓 イチゴの株検出・NDVI解析アプリ")
 st.markdown(
     "イチゴの畝を真上から撮影し、**NDVI値を抽出して二値化した画像**"
-    "（PNG, JPG, TIF/TIFF形式）をアップロードするか、サンプル画像をお試しください。"
+    "（PNG, JPG, TIF/TIFF形式）をアップロードしてください。"
 )
 
 
@@ -42,37 +41,10 @@ def parse_color_to_rgb(color_val, default_rgb):
     return default_rgb
 
 
-# サンプル画像のダウンロード用関数（タイムアウト設定付き）
-@st.cache_data
-def get_sample_image():
-    url = "https://github.com/yasaibusisetuengei/plant-level-analysis-of-strawberry/releases/download/sample/IMG_3714.tif"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as response:
-            image_bytes = response.read()
-        return io.BytesIO(image_bytes)
-    except Exception as e:
-        return None
-
-
-# サンプル画像を使用するチェックボックス
-use_sample = st.checkbox(
-    "🧪 サンプル画像（IMG_3714.tif）を使用して試す", value=False
+# 画像アップロード（.tif, .tiffファイルに対応）
+uploaded_file = st.file_uploader(
+    "二値化されたNDVI画像をアップロード", type=["png", "jpg", "jpeg", "tif", "tiff"]
 )
-
-if use_sample:
-    sample_io = get_sample_image()
-    if sample_io is not None:
-        uploaded_file = sample_io
-        st.info("💡 サンプル画像を読み込みました。")
-    else:
-        st.error("サンプル画像のダウンロードに失敗しました。時間をおいて再度お試しください。")
-        uploaded_file = None
-else:
-    uploaded_file = st.file_uploader(
-        "二値化されたNDVI画像をアップロード",
-        type=["png", "jpg", "jpeg", "tif", "tiff"],
-    )
 
 if uploaded_file is not None:
     try:
@@ -141,7 +113,7 @@ if uploaded_file is not None:
         if "rects_data" not in st.session_state:
             st.session_state["rects_data"] = []
 
-        # Drawable Canvas の配置（リサイズ済みの背景画像を渡す）
+        # Drawable Canvas の配置
         canvas_result = st_canvas(
             fill_color=fill_color_rgba,
             stroke_width=stroke_width,
@@ -334,5 +306,5 @@ if uploaded_file is not None:
         )
 else:
     st.info(
-        "📂 アプリケーションを開始するには、チェックボックスからサンプル画像を選択するか、二値化されたNDVI画像（PNG, JPG, TIF等）をアップロードしてください。"
+        "📂 アプリケーションを開始するには、二値化されたNDVI画像（PNG, JPG, TIF等）をアップロードしてください。"
     )
