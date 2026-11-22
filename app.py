@@ -596,6 +596,9 @@ def init_state():
         "sp_canvas_ver": 0,
         "sp_applied_count": 0,
         "last_image_source": None,
+        "sp_n_segments": 250,
+        "sp_compactness": 10.0,
+        "sp_show_boundaries": True,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -784,33 +787,34 @@ base_name = os.path.splitext(file_name)[0]
 # ------------------------------------------------------------
 with tab2:
     col2_ctrl, col2_main, col2_mask = st.columns([1, 1.8, 1.8])
+    apply_brush_clicked = False
 
     with col2_ctrl:
         st.subheader("設定")
-        edit_method = st.radio(
+        edit_method = st.selectbox(
             "修正方法",
             ["直接描いて修正（ブラシ）", "スーパーピクセルをクリック（反転）"],
         )
 
         st.divider()
-        st.markdown("**スーパーピクセルの操作**")
-        n_segments = st.slider(
-            "スーパーピクセルの粒度（分割数）",
-            min_value=50,
-            max_value=1500,
-            value=250,
-            step=10,
-            help="数値が大きいほどスーパーピクセルが細かくなります。",
-        )
-        compactness = st.slider(
-            "コンパクトネス（形状の均一さ）",
-            min_value=1.0,
-            max_value=40.0,
-            value=10.0,
-            step=1.0,
-        )
-        show_boundaries = st.checkbox("スーパーピクセル境界線を表示", value=True)
         if edit_method == "スーパーピクセルをクリック（反転）":
+            st.markdown("**スーパーピクセルの操作**")
+            n_segments = st.slider(
+                "スーパーピクセルの粒度（分割数）",
+                min_value=50,
+                max_value=1500,
+                step=10,
+                key="sp_n_segments",
+                help="数値が大きいほどスーパーピクセルが細かくなります。",
+            )
+            compactness = st.slider(
+                "コンパクトネス（形状の均一さ）",
+                min_value=1.0,
+                max_value=40.0,
+                step=1.0,
+                key="sp_compactness",
+            )
+            show_boundaries = st.checkbox("スーパーピクセル境界線を表示", key="sp_show_boundaries")
             brush_radius = st.slider(
                 "まとめてピクセルを選択",
                 min_value=0,
@@ -819,9 +823,11 @@ with tab2:
                 step=5,
                 help="0にするとクリックした1つのスーパーピクセルのみを反転します。",
             )
+        else:
+            n_segments = st.session_state.sp_n_segments
+            compactness = st.session_state.sp_compactness
+            show_boundaries = st.session_state.sp_show_boundaries
 
-        if edit_method == "直接描いて修正（ブラシ）":
-            st.divider()
             st.markdown("**ブラシの操作**")
             brush_action = st.radio(
                 "ブラシ操作",
@@ -840,6 +846,7 @@ with tab2:
                 st.session_state.sp_canvas_ver += 1
                 st.session_state.sp_applied_count = 0
                 st.rerun()
+            apply_brush_clicked = st.button("編集画面に適用", type="primary", use_container_width=True)
 
         st.divider()
         st.download_button(
@@ -880,7 +887,7 @@ with tab2:
                 key=f"sp_draw_canvas_{st.session_state.sp_canvas_ver}",
             )
 
-            if st.button("編集画面に適用", type="primary", use_container_width=True):
+            if apply_brush_clicked:
                 objs = (sp_draw_res.json_data or {}).get("objects", []) if sp_draw_res.json_data else []
                 if len(objs) > 0:
                     stroke_work = freedraw_objs_to_mask(
