@@ -436,27 +436,38 @@ def freedraw_objs_to_mask(
     scale_y: float,
     default_brush: int,
 ) -> np.ndarray:
-    """st_canvasのjson_data(freedraw path)から太さ付きのboolマスクを生成"""
+    """st_canvasのjson_data(freedraw path / SVG文字列 / 矩形)から太さ付きのboolマスクを生成"""
     mask_img = Image.new("L", (img_w, img_h), 0)
     draw = ImageDraw.Draw(mask_img)
 
     for obj in objs:
-        if obj.get("type") != "path" or "path" not in obj:
+        if not isinstance(obj, dict):
             continue
-        stroke_w = max(1, int(round(obj.get("strokeWidth", default_brush) * scale_x)))
+        stroke_w = max(1, int(round(float(obj.get("strokeWidth", default_brush)) * scale_x)))
         r = max(1, stroke_w // 2)
         pts = []
-        for cmd in obj["path"]:
-            if not isinstance(cmd, (list, tuple)) or len(cmd) < 3:
-                continue
-            op = str(cmd[0]).upper()
-            if op in ("M", "L") and isinstance(cmd[1], (int, float)) and isinstance(cmd[2], (int, float)):
-                pts.append((int(round(cmd[1] * scale_x)), int(round(cmd[2] * scale_y))))
-            elif op == "Q" and len(cmd) >= 5:
-                pts.append((int(round(cmd[1] * scale_x)), int(round(cmd[2] * scale_y))))
-                pts.append((int(round(cmd[3] * scale_x)), int(round(cmd[4] * scale_y))))
-            elif op == "C" and len(cmd) >= 7:
-                pts.append((int(round(cmd[5] * scale_x)), int(round(cmd[6] * scale_y))))
+
+        path_data = obj.get("path")
+        if isinstance(path_data, list):
+            for cmd in path_data:
+                if isinstance(cmd, (list, tuple)):
+                    nums = []
+                    for v in cmd[1:]:
+                        try:
+                            nums.append(float(v))
+                        except (TypeError, ValueError):
+                            pass
+                    for j in range(0, len(nums) - 1, 2):
+                        px = int(np.clip(round(nums[j] * scale_x), 0, img_w - 1))
+                        py = int(np.clip(round(nums[j + 1] * scale_y), 0, img_h - 1))
+                        pts.append((px, py))
+        elif isinstance(path_data, str):
+            nums = [float(x) for x in re.findall(r"[-+]?\d*\.?\d+", path_data)]
+            for j in range(0, len(nums) - 1, 2):
+                px = int(np.clip(round(nums[j] * scale_x), 0, img_w - 1))
+                py = int(np.clip(round(nums[j + 1] * scale_y), 0, img_h - 1))
+                pts.append((px, py))
+
         if len(pts) >= 2:
             draw.line(pts, fill=255, width=stroke_w)
             for px, py in pts:
@@ -464,8 +475,19 @@ def freedraw_objs_to_mask(
         elif len(pts) == 1:
             px, py = pts[0]
             draw.ellipse([px - r, py - r, px + r, py + r], fill=255)
+        elif "left" in obj and "top" in obj:
+            left = float(obj.get("left", 0))
+            top = float(obj.get("top", 0))
+            w = max(1.0, float(obj.get("width", 10)) * float(obj.get("scaleX", 1.0)))
+            h = max(1.0, float(obj.get("height", 10)) * float(obj.get("scaleY", 1.0)))
+            x1 = int(np.clip(round(left * scale_x), 0, img_w - 1))
+            y1 = int(np.clip(round(top * scale_y), 0, img_h - 1))
+            x2 = int(np.clip(round((left + w) * scale_x), 0, img_w - 1))
+            y2 = int(np.clip(round((top + h) * scale_y), 0, img_h - 1))
+            draw.rectangle([min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)], fill=255)
 
     return np.array(mask_img, dtype=np.uint8) > 0
+
 
 def canvas_obj_to_mask(
     obj: dict,
