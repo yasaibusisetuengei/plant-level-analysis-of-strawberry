@@ -449,7 +449,7 @@ def freedraw_objs_to_mask(
         for cmd in obj["path"]:
             if not isinstance(cmd, (list, tuple)) or len(cmd) < 3:
                 continue
-            op = cmd[0]
+            op = str(cmd[0]).upper()
             if op in ("M", "L") and isinstance(cmd[1], (int, float)) and isinstance(cmd[2], (int, float)):
                 pts.append((int(round(cmd[1] * scale_x)), int(round(cmd[2] * scale_y))))
             elif op == "Q" and len(cmd) >= 5:
@@ -594,6 +594,7 @@ def init_state():
         "last_wheel_val": None,
         "ndvi_objs": [],
         "sp_canvas_ver": 0,
+        "sp_applied_count": 0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -728,6 +729,7 @@ with tab1:
             st.session_state.last_click = None
             st.session_state.ndvi_objs = []
             st.session_state.sp_canvas_ver += 1
+            st.session_state.sp_applied_count = 0
         elif st.session_state.work_mask is None or st.session_state.work_mask.shape != (img_h, img_w):
             st.session_state.work_mask = hsv_mask.copy()
             st.session_state.last_click = None
@@ -751,6 +753,7 @@ with tab1:
         if st.button("このHSVマスクを②に反映", type="primary", use_container_width=True):
             st.session_state.work_mask = hsv_mask.copy()
             st.session_state.sp_canvas_ver += 1
+            st.session_state.sp_applied_count = 0
             st.success("HSVマスクを「②スーパーピクセルで修正」に反映しました。")
 
 # 元解像度へ復元したマスクを準備
@@ -774,6 +777,13 @@ with tab2:
 
     with col2_ctrl:
         st.subheader("設定")
+        edit_method = st.radio(
+            "修正方法",
+            ["直接描いて修正（ブラシ）", "スーパーピクセルをクリック（反転）"],
+        )
+
+        st.divider()
+        st.markdown("**スーパーピクセルの操作**")
         n_segments = st.slider(
             "スーパーピクセルの粒度（分割数）",
             min_value=50,
@@ -790,14 +800,19 @@ with tab2:
             step=1.0,
         )
         show_boundaries = st.checkbox("スーパーピクセル境界線を表示", value=True)
-
-        st.divider()
-        edit_method = st.radio(
-            "修正方法",
-            ["直接描いて修正（ブラシ）", "スーパーピクセルをクリック（反転）"],
-        )
+        if edit_method == "スーパーピクセルをクリック（反転）":
+            brush_radius = st.slider(
+                "まとめてピクセルを選択",
+                min_value=0,
+                max_value=100,
+                value=0,
+                step=5,
+                help="0にするとクリックした1つのスーパーピクセルのみを反転します。",
+            )
 
         if edit_method == "直接描いて修正（ブラシ）":
+            st.divider()
+            st.markdown("**ブラシの操作**")
             brush_action = st.radio(
                 "ブラシ操作",
                 ["追加", "消去"],
@@ -811,15 +826,10 @@ with tab2:
                 step=1,
             )
             snap_to_sp = st.checkbox("描いた部分をスーパーピクセル単位に合わせる", value=True)
-        else:
-            brush_radius = st.slider(
-                "まとめてピクセルを選択",
-                min_value=0,
-                max_value=100,
-                value=0,
-                step=5,
-                help="0にするとクリックした1つのスーパーピクセルのみを反転します。",
-            )
+            if st.button("描画レイヤーをクリア", use_container_width=True):
+                st.session_state.sp_canvas_ver += 1
+                st.session_state.sp_applied_count = 0
+                st.rerun()
 
         st.divider()
         st.download_button(
@@ -843,7 +853,7 @@ with tab2:
             mask_color=selected_mask_color,
             show_boundaries=show_boundaries,
         )
-        disp_img, _ = resize_for_display(overlay_img, DISPLAY_WIDTH)
+        disp_img, _ = resize_for_display(overlay_img, 460)
         disp_h, disp_w = disp_img.shape[:2]
 
         if edit_method == "直接描いて修正（ブラシ）":
@@ -860,17 +870,19 @@ with tab2:
                 key=f"sp_draw_canvas_{st.session_state.sp_canvas_ver}",
             )
 
-            if sp_draw_res.json_data is not None and len(sp_draw_res.json_data.get("objects", [])) > 0:
+            objs = (sp_draw_res.json_data or {}).get("objects", []) if sp_draw_res.json_data else []
+            if len(objs) > st.session_state.sp_applied_count:
+                new_objs = objs[st.session_state.sp_applied_count :]
                 stroke_work = freedraw_objs_to_mask(
-                    sp_draw_res.json_data["objects"],
+                    new_objs,
                     img_w,
                     img_h,
                     img_w / float(disp_w),
                     img_h / float(disp_h),
                     brush_size,
                 )
+                st.session_state.sp_applied_count = len(objs)
                 if np.any(stroke_work):
-
                     if snap_to_sp:
                         touched_labels = np.unique(segments[stroke_work])
                         target_region = np.isin(segments, touched_labels)
@@ -882,7 +894,6 @@ with tab2:
                     else:
                         st.session_state.work_mask[target_region] = False
 
-                    st.session_state.sp_canvas_ver += 1
                     st.rerun()
         else:
             coord_kwargs = {"key": "sp_canvas"}
@@ -929,77 +940,65 @@ with tab2:
 with tab3:
     st.subheader("株の範囲指定・NDVI解析")
 
-    if using_sample:
-        st.info(
-            f"サンプル画像使用中のため、以下のリポジトリ上のNDVI画像・マスク画像を利用できます：\n"
-            f"- **NDVI画像**: [{SAMPLE_NDVI_NAME}]({SAMPLE_NDVI_PAGE_URL})\n"
-            f"- **マスク画像**: [{SAMPLE_MASK_NAME}]({SAMPLE_MASK_PAGE_URL})"
-        )
-        use_sample_ndvi_pair = st.checkbox(
-            f"サンプルのNDVI画像 ({SAMPLE_NDVI_NAME}) とマスク画像 ({SAMPLE_MASK_NAME}) を使用する",
-            value=True,
-        )
-    else:
-        use_sample_ndvi_pair = False
-
     up_col1, up_col2 = st.columns(2)
     with up_col1:
         ndvi_uploaded = st.file_uploader(
             "NDVI画像をアップロード (.png / .jpg / .jpeg / .tif / .tiff)",
             type=["png", "jpg", "jpeg", "tif", "tiff"],
             key="ndvi_uploader",
-            help="未アップロードの場合はサンプルNDVI画像または上部で選択した画像を使用します。",
+            help="未アップロードの場合は上部で選択した画像を使用します。",
         )
+        if ndvi_uploaded is not None:
+            ndvi_full_rgb = load_image_rgb(ndvi_uploaded.getvalue(), ndvi_uploaded.name)
+        elif using_sample:
+            try:
+                with st.spinner("サンプルNDVI画像を読み込んでいます..."):
+                    ndvi_bytes = load_repo_or_url_bytes(SAMPLE_NDVI_NAME, SAMPLE_NDVI_RAW_URL)
+                    ndvi_full_rgb = load_image_rgb(ndvi_bytes, SAMPLE_NDVI_NAME)
+                st.caption(f"セット済み: `{SAMPLE_NDVI_NAME}`")
+            except Exception as e:
+                st.warning(f"サンプルNDVI画像の読み込みに失敗したため元画像を使用します: {e}")
+                ndvi_full_rgb = img_full_rgb
+        else:
+            ndvi_full_rgb = img_full_rgb
+
+    ndvi_h, ndvi_w = ndvi_full_rgb.shape[:2]
+
     with up_col2:
         mask_uploaded = st.file_uploader(
             "マスク画像をアップロード (白黒 .png / .jpg / .tif)",
             type=["png", "jpg", "jpeg", "tif", "tiff"],
             key="mask_uploader",
-            help="未アップロードの場合はサンプルマスクまたはタブ①・②で作成したマスクを使用します。",
+            help="未アップロードの場合はタブ①・②で作成したマスクを使用します。",
         )
-
-    if ndvi_uploaded is not None:
-        ndvi_full_rgb = load_image_rgb(ndvi_uploaded.getvalue(), ndvi_uploaded.name)
-    elif use_sample_ndvi_pair:
-        try:
-            with st.spinner("サンプルNDVI画像を読み込んでいます..."):
-                ndvi_bytes = load_repo_or_url_bytes(SAMPLE_NDVI_NAME, SAMPLE_NDVI_RAW_URL)
-                ndvi_full_rgb = load_image_rgb(ndvi_bytes, SAMPLE_NDVI_NAME)
-        except Exception as e:
-            st.warning(f"サンプルNDVI画像の読み込みに失敗したため元画像を使用します: {e}")
-            ndvi_full_rgb = img_full_rgb
-    else:
-        ndvi_full_rgb = img_full_rgb
-
-    ndvi_h, ndvi_w = ndvi_full_rgb.shape[:2]
-
-    if mask_uploaded is not None:
-        mask_rgb = load_image_rgb(mask_uploaded.getvalue(), mask_uploaded.name)
-        mask_gray = cv2.cvtColor(mask_rgb, cv2.COLOR_RGB2GRAY)
-        if mask_gray.shape != (ndvi_h, ndvi_w):
-            mask_gray = cv2.resize(mask_gray, (ndvi_w, ndvi_h), interpolation=cv2.INTER_NEAREST)
-        analysis_mask = mask_gray > (127 if mask_gray.max() > 1 else 0)
-    elif use_sample_ndvi_pair:
-        try:
-            with st.spinner("サンプルマスク画像を読み込んでいます..."):
-                smask_bytes = load_repo_or_url_bytes(SAMPLE_MASK_NAME, SAMPLE_MASK_RAW_URL)
-                smask_rgb = load_image_rgb(smask_bytes, SAMPLE_MASK_NAME)
-                smask_gray = cv2.cvtColor(smask_rgb, cv2.COLOR_RGB2GRAY)
-                if smask_gray.shape != (ndvi_h, ndvi_w):
-                    smask_gray = cv2.resize(smask_gray, (ndvi_w, ndvi_h), interpolation=cv2.INTER_NEAREST)
-                analysis_mask = smask_gray > (127 if smask_gray.max() > 1 else 0)
-        except Exception as e:
-            st.warning(f"サンプルマスク画像の読み込みに失敗したため作業マスクを使用します: {e}")
-            analysis_mask = export_mask
-    else:
-        if export_mask.shape != (ndvi_h, ndvi_w):
-            analysis_mask = cv2.resize(
-                export_mask.astype(np.uint8),
-                (ndvi_w, ndvi_h),
-                interpolation=cv2.INTER_NEAREST,
-            ).astype(bool)
+        if mask_uploaded is not None:
+            mask_rgb = load_image_rgb(mask_uploaded.getvalue(), mask_uploaded.name)
+            mask_gray = cv2.cvtColor(mask_rgb, cv2.COLOR_RGB2GRAY)
+            if mask_gray.shape != (ndvi_h, ndvi_w):
+                mask_gray = cv2.resize(mask_gray, (ndvi_w, ndvi_h), interpolation=cv2.INTER_NEAREST)
+            analysis_mask = mask_gray > (127 if mask_gray.max() > 1 else 0)
+        elif using_sample:
+            try:
+                with st.spinner("サンプルマスク画像を読み込んでいます..."):
+                    smask_bytes = load_repo_or_url_bytes(SAMPLE_MASK_NAME, SAMPLE_MASK_RAW_URL)
+                    smask_rgb = load_image_rgb(smask_bytes, SAMPLE_MASK_NAME)
+                    smask_gray = cv2.cvtColor(smask_rgb, cv2.COLOR_RGB2GRAY)
+                    if smask_gray.shape != (ndvi_h, ndvi_w):
+                        smask_gray = cv2.resize(smask_gray, (ndvi_w, ndvi_h), interpolation=cv2.INTER_NEAREST)
+                    analysis_mask = smask_gray > (127 if smask_gray.max() > 1 else 0)
+                st.caption(f"セット済み: `{SAMPLE_MASK_NAME}`")
+            except Exception as e:
+                st.warning(f"サンプルマスク画像の読み込みに失敗したため作業マスクを使用します: {e}")
+                analysis_mask = export_mask
         else:
-            analysis_mask = export_mask
+            if export_mask.shape != (ndvi_h, ndvi_w):
+                analysis_mask = cv2.resize(
+                    export_mask.astype(np.uint8),
+                    (ndvi_w, ndvi_h),
+                    interpolation=cv2.INTER_NEAREST,
+                ).astype(bool)
+            else:
+                analysis_mask = export_mask
 
     seg_mode = st.radio(
         "株の指定方法",
