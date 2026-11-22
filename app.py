@@ -30,8 +30,17 @@ st.set_page_config(
 
 DISPLAY_WIDTH = 600
 WORK_MAX_SIDE = 1024
+
 SAMPLE_SEG_NAME = "IMG_3715.jpg"
-SAMPLE_SEG_URL = "https://raw.githubusercontent.com/yasaibusisetuengei/segmentation-app/main/IMG_3715.jpg"
+SAMPLE_SEG_URL = "https://raw.githubusercontent.com/yasaibusisetuengei/plant-level-analysis-of-strawberry/main/IMG_3715.jpg"
+
+SAMPLE_NDVI_NAME = "IMG_3715_NDVI.jpg"
+SAMPLE_NDVI_RAW_URL = "https://raw.githubusercontent.com/yasaibusisetuengei/plant-level-analysis-of-strawberry/main/IMG_3715_NDVI.jpg"
+SAMPLE_NDVI_PAGE_URL = "https://github.com/yasaibusisetuengei/plant-level-analysis-of-strawberry/blob/main/IMG_3715_NDVI.jpg"
+
+SAMPLE_MASK_NAME = "IMG_3715_mask.png"
+SAMPLE_MASK_RAW_URL = "https://raw.githubusercontent.com/yasaibusisetuengei/plant-level-analysis-of-strawberry/main/IMG_3715_mask.png"
+SAMPLE_MASK_PAGE_URL = "https://github.com/yasaibusisetuengei/plant-level-analysis-of-strawberry/blob/main/IMG_3715_mask.png"
 
 # ------------------------------------------------------------
 # 色相環カスタムコンポーネント (HTML5 Canvas ドラッグ対応)
@@ -285,6 +294,15 @@ def download_url_bytes(url: str) -> bytes:
 
 
 @st.cache_data(show_spinner=False)
+def load_repo_or_url_bytes(filename: str, raw_url: str) -> bytes:
+    local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    if os.path.exists(local_path):
+        with open(local_path, "rb") as f:
+            return f.read()
+    return download_url_bytes(raw_url)
+
+
+@st.cache_data(show_spinner=False)
 def load_image_rgb(file_bytes: bytes, filename: str) -> np.ndarray:
     ext = os.path.splitext(filename)[1].lower()
 
@@ -465,16 +483,15 @@ def find_non_overlapping_label_box(
     candidates = []
 
     for m in margins:
-        # 上・下・左・右・四隅の候補を生成
         raw_positions = [
-            (cx_pos - box_w // 2, y1 - box_h - m),         # 上
-            (cx_pos - box_w // 2, y2 + m),                 # 下
-            (x1 - box_w - m, cy_pos - box_h // 2),         # 左
-            (x2 + m, cy_pos - box_h // 2),                 # 右
-            (x1 - box_w - m, y1 - box_h - m),              # 左上
-            (x2 + m, y1 - box_h - m),                      # 右上
-            (x1 - box_w - m, y2 + m),                      # 左下
-            (x2 + m, y2 + m),                              # 右下
+            (cx_pos - box_w // 2, y1 - box_h - m),
+            (cx_pos - box_w // 2, y2 + m),
+            (x1 - box_w - m, cy_pos - box_h // 2),
+            (x2 + m, cy_pos - box_h // 2),
+            (x1 - box_w - m, y1 - box_h - m),
+            (x2 + m, y1 - box_h - m),
+            (x1 - box_w - m, y2 + m),
+            (x2 + m, y2 + m),
         ]
         for lx, ly in raw_positions:
             lx1 = max(2, min(img_w - box_w - 2, lx))
@@ -482,17 +499,13 @@ def find_non_overlapping_label_box(
             lx2 = lx1 + box_w
             ly2 = ly1 + box_h
 
-            # 既配置ラベルとの重なり面積
             label_overlap = 0
             for px1, py1, px2, py2 in placed_boxes:
                 ox = max(0, min(lx2, px2) - max(lx1, px1))
                 oy = max(0, min(ly2, py2) - max(ly1, py1))
                 label_overlap += ox * oy
 
-            # 株マスクとの重なりピクセル数
             mask_overlap = int(np.sum(mask_all[ly1:ly2, lx1:lx2]))
-
-            # 重心からの距離
             lcx = (lx1 + lx2) / 2.0
             lcy = (ly1 + ly2) / 2.0
             dist = ((lcx - cx_pos) ** 2 + (lcy - cy_pos) ** 2) ** 0.5
@@ -542,6 +555,7 @@ def init_state():
         "wheel_sync_id": 0,
         "last_wheel_val": None,
         "ndvi_objs": [],
+        "sp_canvas_ver": 0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -558,12 +572,6 @@ st.caption(
     "①HSVと②スーパーピクセルでマスク画像を作成・ダウンロードし、③でNDVI画像とマスク画像を用いた株ごとのセグメンテーション解析が行えます。"
 )
 
-compress_for_work = st.checkbox(
-    "作業中は画像を縮小・圧縮して高速化し、ダウンロード・解析時に元の解像度へ戻す",
-    value=True,
-    help="CR2などの高解像度画像で処理が重い場合に有効にしてください。長辺を最大1024pxに縮小して作業し、出力時に元画像のサイズへ復元します。",
-)
-
 image_source = st.radio(
     "画像の選択方法",
     [
@@ -575,8 +583,9 @@ image_source = st.radio(
 
 file_bytes: Optional[bytes] = None
 file_name: Optional[str] = None
+using_sample = image_source != "ファイルをアップロード"
 
-if image_source == "ファイルをアップロード":
+if not using_sample:
     uploaded_file = st.file_uploader(
         "画像をアップロード (.png / .jpg / .jpeg / .tif / .tiff / .heic / .cr2)",
         type=["png", "jpg", "jpeg", "tif", "tiff", "heic", "heif", "cr2"],
@@ -589,12 +598,7 @@ if image_source == "ファイルをアップロード":
 else:
     try:
         with st.spinner("サンプル画像を読み込んでいます..."):
-            local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), SAMPLE_SEG_NAME)
-            if os.path.exists(local_path):
-                with open(local_path, "rb") as f:
-                    file_bytes = f.read()
-            else:
-                file_bytes = download_url_bytes(SAMPLE_SEG_URL)
+            file_bytes = load_repo_or_url_bytes(SAMPLE_SEG_NAME, SAMPLE_SEG_URL)
             file_name = SAMPLE_SEG_NAME
     except Exception as e:
         st.error(f"サンプル画像の読み込みに失敗しました: {e}")
@@ -607,7 +611,8 @@ with st.spinner("画像を読み込んでいます..."):
 
 orig_h, orig_w = img_full_rgb.shape[:2]
 
-if compress_for_work:
+# 画像サイズに応じて自動で作業用リサイズを発動（長辺 > WORK_MAX_SIDE の場合）
+if max(orig_h, orig_w) > WORK_MAX_SIDE:
     img_rgb = downscale_for_work(img_full_rgb, WORK_MAX_SIDE)
 else:
     img_rgb = img_full_rgb
@@ -684,15 +689,9 @@ with tab1:
             st.session_state.work_mask = hsv_mask.copy()
             st.session_state.last_click = None
             st.session_state.ndvi_objs = []
+            st.session_state.sp_canvas_ver += 1
         elif st.session_state.work_mask is None or st.session_state.work_mask.shape != (img_h, img_w):
-            if st.session_state.work_mask is None:
-                st.session_state.work_mask = hsv_mask.copy()
-            else:
-                st.session_state.work_mask = cv2.resize(
-                    st.session_state.work_mask.astype(np.uint8),
-                    (img_w, img_h),
-                    interpolation=cv2.INTER_NEAREST,
-                ).astype(bool)
+            st.session_state.work_mask = hsv_mask.copy()
             st.session_state.last_click = None
 
     with col1_view:
@@ -713,6 +712,7 @@ with tab1:
 
         if st.button("このHSVマスクを②に反映", type="primary", use_container_width=True):
             st.session_state.work_mask = hsv_mask.copy()
+            st.session_state.sp_canvas_ver += 1
             st.success("HSVマスクを「②スーパーピクセルで修正」に反映しました。")
 
 # 元解像度へ復元したマスクを準備
@@ -752,14 +752,36 @@ with tab2:
             step=1.0,
         )
         show_boundaries = st.checkbox("スーパーピクセル境界線を表示", value=True)
-        brush_radius = st.slider(
-            "まとめてピクセルを選択",
-            min_value=0,
-            max_value=100,
-            value=0,
-            step=5,
-            help="0にするとクリックした1つのスーパーピクセルのみを反転します。",
+
+        st.divider()
+        edit_method = st.radio(
+            "修正方法",
+            ["直接描いて修正（ブラシ）", "スーパーピクセルをクリック（反転）"],
         )
+
+        if edit_method == "直接描いて修正（ブラシ）":
+            brush_action = st.radio(
+                "ブラシ操作",
+                ["追加", "消去"],
+                horizontal=True,
+            )
+            brush_size = st.slider(
+                "ブラシの大きさ (px)",
+                min_value=3,
+                max_value=60,
+                value=15,
+                step=1,
+            )
+            snap_to_sp = st.checkbox("描いた部分をスーパーピクセル単位に合わせる", value=True)
+        else:
+            brush_radius = st.slider(
+                "まとめてピクセルを選択",
+                min_value=0,
+                max_value=100,
+                value=0,
+                step=5,
+                help="0にするとクリックした1つのスーパーピクセルのみを反転します。",
+            )
 
         st.divider()
         st.download_button(
@@ -786,38 +808,76 @@ with tab2:
         disp_img, _ = resize_for_display(overlay_img, DISPLAY_WIDTH)
         disp_h, disp_w = disp_img.shape[:2]
 
-        coord_kwargs = {"key": "sp_canvas"}
-        if "use_column_width" in inspect.signature(streamlit_image_coordinates).parameters:
-            coord_kwargs["use_column_width"] = "always"
+        if edit_method == "直接描いて修正（ブラシ）":
+            stroke_col = "#00FF88" if brush_action == "追加" else "#FF3333"
+            sp_draw_res = st_canvas(
+                fill_color="rgba(0, 0, 0, 0)",
+                stroke_width=brush_size,
+                stroke_color=stroke_col,
+                background_image=Image.fromarray(disp_img),
+                update_streamlit=True,
+                drawing_mode="freedraw",
+                width=disp_w,
+                height=disp_h,
+                key=f"sp_draw_canvas_{st.session_state.sp_canvas_ver}",
+            )
 
-        coords = streamlit_image_coordinates(
-            Image.fromarray(disp_img),
-            **coord_kwargs,
-        )
+            if sp_draw_res.image_data is not None:
+                alpha_ch = sp_draw_res.image_data[:, :, 3]
+                if np.any(alpha_ch > 0):
+                    stroke_disp = (alpha_ch > 0).astype(np.uint8)
+                    stroke_work = cv2.resize(
+                        stroke_disp,
+                        (img_w, img_h),
+                        interpolation=cv2.INTER_NEAREST,
+                    ) > 0
 
-        if coords is not None:
-            click_sig = (coords["x"], coords["y"], brush_radius, n_segments)
-            if st.session_state.last_click != click_sig:
-                st.session_state.last_click = click_sig
+                    if snap_to_sp:
+                        touched_labels = np.unique(segments[stroke_work])
+                        target_region = np.isin(segments, touched_labels)
+                    else:
+                        target_region = stroke_work
 
-                rendered_w = coords.get("width", disp_w)
-                rendered_h = coords.get("height", disp_h)
-                orig_x = int(np.clip(round(coords["x"] * img_w / rendered_w), 0, img_w - 1))
-                orig_y = int(np.clip(round(coords["y"] * img_h / rendered_h), 0, img_h - 1))
+                    if brush_action == "追加":
+                        st.session_state.work_mask[target_region] = True
+                    else:
+                        st.session_state.work_mask[target_region] = False
 
-                if brush_radius == 0:
-                    target_label = segments[orig_y, orig_x]
-                    target_region = segments == target_label
-                else:
-                    yy, xx = np.ogrid[:img_h, :img_w]
-                    circle = (xx - orig_x) ** 2 + (yy - orig_y) ** 2 <= brush_radius ** 2
-                    target_labels = np.unique(segments[circle])
-                    target_region = np.isin(segments, target_labels)
+                    st.session_state.sp_canvas_ver += 1
+                    st.rerun()
+        else:
+            coord_kwargs = {"key": "sp_canvas"}
+            if "use_column_width" in inspect.signature(streamlit_image_coordinates).parameters:
+                coord_kwargs["use_column_width"] = "always"
 
-                center_val = st.session_state.work_mask[orig_y, orig_x]
-                st.session_state.work_mask[target_region] = not center_val
+            coords = streamlit_image_coordinates(
+                Image.fromarray(disp_img),
+                **coord_kwargs,
+            )
 
-                st.rerun()
+            if coords is not None:
+                click_sig = (coords["x"], coords["y"], brush_radius, n_segments)
+                if st.session_state.last_click != click_sig:
+                    st.session_state.last_click = click_sig
+
+                    rendered_w = coords.get("width", disp_w)
+                    rendered_h = coords.get("height", disp_h)
+                    orig_x = int(np.clip(round(coords["x"] * img_w / rendered_w), 0, img_w - 1))
+                    orig_y = int(np.clip(round(coords["y"] * img_h / rendered_h), 0, img_h - 1))
+
+                    if brush_radius == 0:
+                        target_label = segments[orig_y, orig_x]
+                        target_region = segments == target_label
+                    else:
+                        yy, xx = np.ogrid[:img_h, :img_w]
+                        circle = (xx - orig_x) ** 2 + (yy - orig_y) ** 2 <= brush_radius ** 2
+                        target_labels = np.unique(segments[circle])
+                        target_region = np.isin(segments, target_labels)
+
+                    center_val = st.session_state.work_mask[orig_y, orig_x]
+                    st.session_state.work_mask[target_region] = not center_val
+
+                    st.rerun()
 
     with col2_mask:
         st.subheader("マスク画像（白黒）")
@@ -830,24 +890,45 @@ with tab2:
 with tab3:
     st.subheader("株の範囲指定・NDVI解析")
 
+    if using_sample:
+        st.info(
+            f"サンプル画像使用中のため、以下のリポジトリ上のNDVI画像・マスク画像を利用できます：\n"
+            f"- **NDVI画像**: [{SAMPLE_NDVI_NAME}]({SAMPLE_NDVI_PAGE_URL})\n"
+            f"- **マスク画像**: [{SAMPLE_MASK_NAME}]({SAMPLE_MASK_PAGE_URL})"
+        )
+        use_sample_ndvi_pair = st.checkbox(
+            f"サンプルのNDVI画像 ({SAMPLE_NDVI_NAME}) とマスク画像 ({SAMPLE_MASK_NAME}) を使用する",
+            value=True,
+        )
+    else:
+        use_sample_ndvi_pair = False
+
     up_col1, up_col2 = st.columns(2)
     with up_col1:
         ndvi_uploaded = st.file_uploader(
             "NDVI画像をアップロード (.png / .jpg / .jpeg / .tif / .tiff)",
             type=["png", "jpg", "jpeg", "tif", "tiff"],
             key="ndvi_uploader",
-            help="未アップロードの場合は上部で選択した画像を使用します。",
+            help="未アップロードの場合はサンプルNDVI画像または上部で選択した画像を使用します。",
         )
     with up_col2:
         mask_uploaded = st.file_uploader(
             "マスク画像をアップロード (白黒 .png / .jpg / .tif)",
             type=["png", "jpg", "jpeg", "tif", "tiff"],
             key="mask_uploader",
-            help="未アップロードの場合はタブ①・②で作成したマスクを使用します。",
+            help="未アップロードの場合はサンプルマスクまたはタブ①・②で作成したマスクを使用します。",
         )
 
     if ndvi_uploaded is not None:
         ndvi_full_rgb = load_image_rgb(ndvi_uploaded.getvalue(), ndvi_uploaded.name)
+    elif use_sample_ndvi_pair:
+        try:
+            with st.spinner("サンプルNDVI画像を読み込んでいます..."):
+                ndvi_bytes = load_repo_or_url_bytes(SAMPLE_NDVI_NAME, SAMPLE_NDVI_RAW_URL)
+                ndvi_full_rgb = load_image_rgb(ndvi_bytes, SAMPLE_NDVI_NAME)
+        except Exception as e:
+            st.warning(f"サンプルNDVI画像の読み込みに失敗したため元画像を使用します: {e}")
+            ndvi_full_rgb = img_full_rgb
     else:
         ndvi_full_rgb = img_full_rgb
 
@@ -859,6 +940,18 @@ with tab3:
         if mask_gray.shape != (ndvi_h, ndvi_w):
             mask_gray = cv2.resize(mask_gray, (ndvi_w, ndvi_h), interpolation=cv2.INTER_NEAREST)
         analysis_mask = mask_gray > (127 if mask_gray.max() > 1 else 0)
+    elif use_sample_ndvi_pair:
+        try:
+            with st.spinner("サンプルマスク画像を読み込んでいます..."):
+                smask_bytes = load_repo_or_url_bytes(SAMPLE_MASK_NAME, SAMPLE_MASK_RAW_URL)
+                smask_rgb = load_image_rgb(smask_bytes, SAMPLE_MASK_NAME)
+                smask_gray = cv2.cvtColor(smask_rgb, cv2.COLOR_RGB2GRAY)
+                if smask_gray.shape != (ndvi_h, ndvi_w):
+                    smask_gray = cv2.resize(smask_gray, (ndvi_w, ndvi_h), interpolation=cv2.INTER_NEAREST)
+                analysis_mask = smask_gray > (127 if smask_gray.max() > 1 else 0)
+        except Exception as e:
+            st.warning(f"サンプルマスク画像の読み込みに失敗したため作業マスクを使用します: {e}")
+            analysis_mask = export_mask
     else:
         if export_mask.shape != (ndvi_h, ndvi_w):
             analysis_mask = cv2.resize(
@@ -1010,7 +1103,6 @@ with tab3:
             x1, x2 = int(xs.min()), int(xs.max()) + 1
             y1, y2 = int(ys.min()), int(ys.max()) + 1
 
-            # セグメンテーション領域を半透明で塗りつぶし＋輪郭線描画
             annotated_arr[pmask] = (
                 annotated_arr[pmask].astype(np.float32) * 0.6
                 + np.array(color_rgb, dtype=np.float32) * 0.4
@@ -1019,11 +1111,9 @@ with tab3:
             contours, _ = cv2.findContours(pmask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             cv2.drawContours(annotated_arr, contours, -1, color_rgb, max(2, ndvi_w // 400))
 
-            # 重心計算
             cx_pos = int(np.mean(xs))
             cy_pos = int(np.mean(ys))
 
-            # 株と重ならない位置にラベルを配置
             font_scale = max(0.55, ndvi_w / 1200.0)
             thickness = max(2, int(round(font_scale * 2)))
             (tw, th), baseline = cv2.getTextSize(crop_id, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
@@ -1041,12 +1131,10 @@ with tab3:
             )
             placed_label_boxes.append((lx1, ly1, lx2, ly2))
 
-            # ラベル枠から株重心への引き出し線
             lcx = (lx1 + lx2) // 2
             lcy = (ly1 + ly2) // 2
             cv2.line(annotated_arr, (lcx, lcy), (cx_pos, cy_pos), color_rgb, max(1, thickness - 1), cv2.LINE_AA)
 
-            # ラベル背景とテキスト描画
             cv2.rectangle(annotated_arr, (lx1, ly1), (lx2, ly2), (20, 20, 20), -1)
             cv2.rectangle(annotated_arr, (lx1, ly1), (lx2, ly2), color_rgb, max(1, thickness - 1))
             cv2.putText(
@@ -1060,7 +1148,6 @@ with tab3:
                 cv2.LINE_AA,
             )
 
-            # セグメンテーション領域のみで個別株画像（背景黒抜き）を切り出し
             masked_full = np.zeros_like(ndvi_full_rgb)
             masked_full[pmask] = ndvi_full_rgb[pmask]
             cropped_arr = masked_full[y1:y2, x1:x2]
@@ -1070,7 +1157,6 @@ with tab3:
             cropped_img.save(crop_byte_arr, format="PNG")
             zip_file.writestr(f"{crop_id}.png", crop_byte_arr.getvalue())
 
-            # セグメンテーション領域内のNDVI指標・面積集計
             plant_pixels = int(np.sum(pmask))
             bbox_area = (x2 - x1) * (y2 - y1)
             veg_ratio = (plant_pixels / bbox_area) * 100.0 if bbox_area > 0 else 0.0
