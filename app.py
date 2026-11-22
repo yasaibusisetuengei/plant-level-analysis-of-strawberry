@@ -703,7 +703,7 @@ def render_tab2_superpixel(
         st.subheader("設定")
         edit_method = st.selectbox(
             "修正方法",
-            ["直接描いて修正（ブラシ）", "スーパーピクセルをクリック（反転）"],
+            ["スーパーピクセルをクリック（反転）", "直接描いて修正（ブラシ）"],
         )
 
         st.divider()
@@ -741,7 +741,7 @@ def render_tab2_superpixel(
             st.markdown("**ブラシの操作**")
             brush_action = st.radio("ブラシ操作", ["追加", "消去"], horizontal=True)
             brush_size = st.slider("ブラシの大きさ (px)", min_value=3, max_value=60, value=15, step=1)
-            snap_to_sp = st.checkbox("描いた部分をスーパーピクセル単位に合わせる", value=True)
+            snap_to_sp = st.checkbox("描いた部分をスーパーピクセル単位に合わせる", value=False)
             if st.button("描画レイヤーをクリア", use_container_width=True):
                 st.session_state.sp_canvas_ver += 1
                 st.session_state.sp_draw_objs = []
@@ -1119,7 +1119,7 @@ def render_tab3_ndvi(
 def main():
     init_state()
 
-    st.title("🍓NDVI解析 & セグメンテーションアプリ")
+    st.title("NDVI解析 & セグメンテーションアプリ")
     st.caption(
         "①HSVと②スーパーピクセルでマスク画像を作成・ダウンロードし、③でNDVI画像とマスク画像を用いた株ごとのセグメンテーション解析が行えます。"
     )
