@@ -5,7 +5,7 @@ import re
 import tempfile
 import urllib.request
 import zipfile
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -32,8 +32,6 @@ DISPLAY_WIDTH = 600
 WORK_MAX_SIDE = 1024
 SAMPLE_SEG_NAME = "IMG_3715.jpg"
 SAMPLE_SEG_URL = "https://raw.githubusercontent.com/yasaibusisetuengei/segmentation-app/main/IMG_3715.jpg"
-SAMPLE_NDVI_NAME = "IMG_3714.tif"
-SAMPLE_NDVI_URL = "https://github.com/yasaibusisetuengei/plant-level-analysis-of-strawberry/releases/download/sample/IMG_3714.tif"
 
 # ------------------------------------------------------------
 # 色相環カスタムコンポーネント (HTML5 Canvas ドラッグ対応)
@@ -305,7 +303,6 @@ def load_image_rgb(file_bytes: bytes, filename: str) -> np.ndarray:
     raw_image = Image.open(io.BytesIO(file_bytes))
     raw_image = ImageOps.exif_transpose(raw_image)
 
-    # 16bitや浮動小数点型などの特殊なTIFを標準的な8bit RGBに変換
     if raw_image.mode in ["I", "I;16", "F"]:
         np_img = np.array(raw_image)
         if np_img.max() > np_img.min():
@@ -419,18 +416,12 @@ def canvas_obj_to_mask(
     scale_x: float,
     scale_y: float,
 ) -> np.ndarray:
-    """drawable_canvasの図形(rect / path / polygon)を元画像サイズのboolマスクに変換"""
     mask_img = Image.new("L", (img_w, img_h), 0)
     draw = ImageDraw.Draw(mask_img)
     obj_type = obj.get("type", "")
 
     if obj_type == "path" and "path" in obj:
         pts = []
-        obj_left = obj.get("left", 0)
-        obj_top = obj.get("top", 0)
-        sx = obj.get("scaleX", 1.0)
-        sy = obj.get("scaleY", 1.0)
-        # path要素をポリゴンとして近似
         for cmd in obj["path"]:
             if len(cmd) >= 3 and isinstance(cmd[1], (int, float)) and isinstance(cmd[2], (int, float)):
                 px = int(round(cmd[1] * scale_x))
@@ -453,6 +444,65 @@ def canvas_obj_to_mask(
             draw.rectangle([x1, y1, x2, y2], fill=255)
 
     return np.array(mask_img, dtype=np.uint8) > 0
+
+
+def find_non_overlapping_label_box(
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    cx_pos: int,
+    cy_pos: int,
+    box_w: int,
+    box_h: int,
+    img_w: int,
+    img_h: int,
+    mask_all: np.ndarray,
+    placed_boxes: List[Tuple[int, int, int, int]],
+) -> Tuple[int, int, int, int]:
+    """株領域および既配置ラベルと重ならない最適なラベル矩形(lx1, ly1, lx2, ly2)を探索"""
+    margins = [8, 20, 36, 56, 80]
+    candidates = []
+
+    for m in margins:
+        # 上・下・左・右・四隅の候補を生成
+        raw_positions = [
+            (cx_pos - box_w // 2, y1 - box_h - m),         # 上
+            (cx_pos - box_w // 2, y2 + m),                 # 下
+            (x1 - box_w - m, cy_pos - box_h // 2),         # 左
+            (x2 + m, cy_pos - box_h // 2),                 # 右
+            (x1 - box_w - m, y1 - box_h - m),              # 左上
+            (x2 + m, y1 - box_h - m),                      # 右上
+            (x1 - box_w - m, y2 + m),                      # 左下
+            (x2 + m, y2 + m),                              # 右下
+        ]
+        for lx, ly in raw_positions:
+            lx1 = max(2, min(img_w - box_w - 2, lx))
+            ly1 = max(2, min(img_h - box_h - 2, ly))
+            lx2 = lx1 + box_w
+            ly2 = ly1 + box_h
+
+            # 既配置ラベルとの重なり面積
+            label_overlap = 0
+            for px1, py1, px2, py2 in placed_boxes:
+                ox = max(0, min(lx2, px2) - max(lx1, px1))
+                oy = max(0, min(ly2, py2) - max(ly1, py1))
+                label_overlap += ox * oy
+
+            # 株マスクとの重なりピクセル数
+            mask_overlap = int(np.sum(mask_all[ly1:ly2, lx1:lx2]))
+
+            # 重心からの距離
+            lcx = (lx1 + lx2) / 2.0
+            lcy = (ly1 + ly2) / 2.0
+            dist = ((lcx - cx_pos) ** 2 + (lcy - cy_pos) ** 2) ** 0.5
+
+            score = (mask_overlap * 1000.0) + (label_overlap * 500.0) + dist
+            candidates.append((score, lx1, ly1, lx2, ly2))
+
+    candidates.sort(key=lambda c: c[0])
+    _, best_x1, best_y1, best_x2, best_y2 = candidates[0]
+    return best_x1, best_y1, best_x2, best_y2
 
 
 # ------------------------------------------------------------
@@ -505,7 +555,7 @@ init_state()
 # ------------------------------------------------------------
 st.title("🍓 イチゴ株検出・NDVI解析 & セグメンテーションアプリ")
 st.caption(
-    "①HSVと②スーパーピクセルで植物マスクを作成・修正し、③ダウンロードおよび④マスク画像に従った株ごとのセグメンテーションNDVI解析が行えます。"
+    "①HSVと②スーパーピクセルでマスク画像を作成・ダウンロードし、③でNDVI画像とマスク画像を用いた株ごとのセグメンテーション解析が行えます。"
 )
 
 compress_for_work = st.checkbox(
@@ -519,7 +569,6 @@ image_source = st.radio(
     [
         "ファイルをアップロード",
         f"サンプル画像 ({SAMPLE_SEG_NAME}) を使用",
-        f"サンプルNDVI画像 ({SAMPLE_NDVI_NAME}) を使用",
     ],
     horizontal=True,
 )
@@ -537,7 +586,7 @@ if image_source == "ファイルをアップロード":
         st.stop()
     file_bytes = uploaded_file.getvalue()
     file_name = uploaded_file.name
-elif image_source == f"サンプル画像 ({SAMPLE_SEG_NAME}) を使用":
+else:
     try:
         with st.spinner("サンプル画像を読み込んでいます..."):
             local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), SAMPLE_SEG_NAME)
@@ -549,14 +598,6 @@ elif image_source == f"サンプル画像 ({SAMPLE_SEG_NAME}) を使用":
             file_name = SAMPLE_SEG_NAME
     except Exception as e:
         st.error(f"サンプル画像の読み込みに失敗しました: {e}")
-        st.stop()
-else:
-    try:
-        with st.spinner("サンプルNDVI画像を読み込んでいます..."):
-            file_bytes = download_url_bytes(SAMPLE_NDVI_URL)
-            file_name = SAMPLE_NDVI_NAME
-    except Exception as e:
-        st.error(f"サンプルNDVI画像のダウンロードに失敗しました: {e}")
         st.stop()
 
 file_key = f"{file_name}_{len(file_bytes)}"
@@ -573,11 +614,10 @@ else:
 
 img_h, img_w = img_rgb.shape[:2]
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "① HSVでマスク作成",
     "②スーパーピクセルで修正",
-    "ダウンロード",
-    "④ 株の範囲指定・NDVI解析",
+    "③ 株の範囲指定・NDVI解析",
 ])
 
 # ------------------------------------------------------------
@@ -590,7 +630,7 @@ with tab1:
         st.subheader("設定")
         preset = st.selectbox(
             "色プリセット",
-            ["緑", "赤", "青", "黄", "白", "黒", "カスタム"],
+            ["緑", "赤", "青", "黄", "白", "黒"],
         )
 
         if preset != st.session_state.last_preset:
@@ -639,7 +679,6 @@ with tab1:
             v_max,
         )
 
-        # 新しい画像が読み込まれたら初期マスクをセット
         if st.session_state.file_key != file_key:
             st.session_state.file_key = file_key
             st.session_state.work_mask = hsv_mask.copy()
@@ -676,6 +715,19 @@ with tab1:
             st.session_state.work_mask = hsv_mask.copy()
             st.success("HSVマスクを「②スーパーピクセルで修正」に反映しました。")
 
+# 元解像度へ復元したマスクを準備
+if (img_h, img_w) != (orig_h, orig_w):
+    export_mask = cv2.resize(
+        st.session_state.work_mask.astype(np.uint8),
+        (orig_w, orig_h),
+        interpolation=cv2.INTER_NEAREST,
+    ).astype(bool)
+else:
+    export_mask = st.session_state.work_mask
+
+binary_mask_u8 = (export_mask.astype(np.uint8)) * 255
+base_name = os.path.splitext(file_name)[0]
+
 # ------------------------------------------------------------
 # タブ②: スーパーピクセルで修正
 # ------------------------------------------------------------
@@ -707,6 +759,16 @@ with tab2:
             value=0,
             step=5,
             help="0にするとクリックした1つのスーパーピクセルのみを反転します。",
+        )
+
+        st.divider()
+        st.download_button(
+            label="マスク画像をダウンロード (PNG)",
+            data=encode_png(binary_mask_u8),
+            file_name=f"{base_name}_mask.png",
+            mime="image/png",
+            type="primary",
+            use_container_width=True,
         )
 
     with st.spinner("スーパーピクセルを計算中..."):
@@ -758,90 +820,54 @@ with tab2:
                 st.rerun()
 
     with col2_mask:
-        st.subheader("最終マスク画像（白黒）")
+        st.subheader("マスク画像（白黒）")
         binary_mask_preview = (st.session_state.work_mask.astype(np.uint8)) * 255
         st.image(binary_mask_preview, use_container_width=True)
 
 # ------------------------------------------------------------
-# タブ③: ダウンロード (元解像度へ復元)
+# タブ③: 株の範囲指定・NDVI解析
 # ------------------------------------------------------------
-if (img_h, img_w) != (orig_h, orig_w):
-    export_mask = cv2.resize(
-        st.session_state.work_mask.astype(np.uint8),
-        (orig_w, orig_h),
-        interpolation=cv2.INTER_NEAREST,
-    ).astype(bool)
-else:
-    export_mask = st.session_state.work_mask
-
-binary_mask_u8 = (export_mask.astype(np.uint8)) * 255
-final_overlay = render_overlay(
-    img_full_rgb,
-    export_mask,
-    None,
-    mask_color=selected_mask_color,
-    show_boundaries=False,
-)
-
 with tab3:
-    st.subheader("ダウンロード")
-    if (img_h, img_w) != (orig_h, orig_w):
-        st.caption(f"作業解像度: {img_w}×{img_h} px → 出力解像度: {orig_w}×{orig_h} px（元サイズに復元済み）")
+    st.subheader("株の範囲指定・NDVI解析")
+
+    up_col1, up_col2 = st.columns(2)
+    with up_col1:
+        ndvi_uploaded = st.file_uploader(
+            "NDVI画像をアップロード (.png / .jpg / .jpeg / .tif / .tiff)",
+            type=["png", "jpg", "jpeg", "tif", "tiff"],
+            key="ndvi_uploader",
+            help="未アップロードの場合は上部で選択した画像を使用します。",
+        )
+    with up_col2:
+        mask_uploaded = st.file_uploader(
+            "マスク画像をアップロード (白黒 .png / .jpg / .tif)",
+            type=["png", "jpg", "jpeg", "tif", "tiff"],
+            key="mask_uploader",
+            help="未アップロードの場合はタブ①・②で作成したマスクを使用します。",
+        )
+
+    if ndvi_uploaded is not None:
+        ndvi_full_rgb = load_image_rgb(ndvi_uploaded.getvalue(), ndvi_uploaded.name)
     else:
-        st.caption(f"出力解像度: {orig_w}×{orig_h} px")
+        ndvi_full_rgb = img_full_rgb
 
-    mask_ratio = float(np.mean(export_mask) * 100.0)
-    st.metric("マスク面積率", f"{mask_ratio:.2f}%")
+    ndvi_h, ndvi_w = ndvi_full_rgb.shape[:2]
 
-    base_name = os.path.splitext(file_name)[0]
-    dl_col1, dl_col2, dl_col3 = st.columns(3)
-
-    with dl_col1:
-        st.image(img_full_rgb, caption="元画像", use_container_width=True)
-        st.download_button(
-            label="元画像をダウンロード (PNG)",
-            data=encode_png(img_full_rgb),
-            file_name=f"{base_name}_original.png",
-            mime="image/png",
-            use_container_width=True,
-        )
-
-    with dl_col2:
-        st.image(binary_mask_u8, caption="最終マスク画像（白黒）", use_container_width=True)
-        st.download_button(
-            label="マスク画像をダウンロード (PNG)",
-            data=encode_png(binary_mask_u8),
-            file_name=f"{base_name}_mask.png",
-            mime="image/png",
-            type="primary",
-            use_container_width=True,
-        )
-
-    with dl_col3:
-        st.image(final_overlay, caption="最終オーバーレイ画像", use_container_width=True)
-        st.download_button(
-            label="オーバーレイ画像をダウンロード (PNG)",
-            data=encode_png(final_overlay),
-            file_name=f"{base_name}_overlay.png",
-            mime="image/png",
-            use_container_width=True,
-        )
-
-# ------------------------------------------------------------
-# タブ④: 株の範囲指定・NDVI解析 (マスク画像に基づくセグメンテーション)
-# ------------------------------------------------------------
-with tab4:
-    st.subheader("株の範囲指定・NDVI解析（マスク画像連動セグメンテーション）")
-
-    use_raw_as_mask = st.checkbox(
-        "アップロード画像自体がすでに二値化NDVI画像の場合は、その白領域をマスクとして使用する",
-        value=False,
-    )
-    if use_raw_as_mask:
-        gray_full = cv2.cvtColor(img_full_rgb, cv2.COLOR_RGB2GRAY)
-        analysis_mask = gray_full > (127 if gray_full.max() > 1 else 0)
+    if mask_uploaded is not None:
+        mask_rgb = load_image_rgb(mask_uploaded.getvalue(), mask_uploaded.name)
+        mask_gray = cv2.cvtColor(mask_rgb, cv2.COLOR_RGB2GRAY)
+        if mask_gray.shape != (ndvi_h, ndvi_w):
+            mask_gray = cv2.resize(mask_gray, (ndvi_w, ndvi_h), interpolation=cv2.INTER_NEAREST)
+        analysis_mask = mask_gray > (127 if mask_gray.max() > 1 else 0)
     else:
-        analysis_mask = export_mask
+        if export_mask.shape != (ndvi_h, ndvi_w):
+            analysis_mask = cv2.resize(
+                export_mask.astype(np.uint8),
+                (ndvi_w, ndvi_h),
+                interpolation=cv2.INTER_NEAREST,
+            ).astype(bool)
+        else:
+            analysis_mask = export_mask
 
     seg_mode = st.radio(
         "株の指定方法",
@@ -852,8 +878,8 @@ with tab4:
         horizontal=True,
     )
 
-    plant_masks = []  # List of (crop_id, mask_bool, color_rgb)
-    pil_full_img = Image.fromarray(img_full_rgb)
+    plant_masks = []
+    pil_ndvi_img = Image.fromarray(ndvi_full_rgb)
 
     if seg_mode == "マスクの連結領域から自動セグメンテーション":
         col_s1, col_s2 = st.columns(2)
@@ -895,7 +921,6 @@ with tab4:
             if area >= min_plant_area:
                 idx += 1
                 crop_id = f"Strawberry_{idx:03d}"
-                # 収縮後の領域を元マスクの範囲内で対応付け
                 pmask = (labels_map == lbl) & analysis_mask
                 plant_masks.append((crop_id, pmask, palette[(idx - 1) % len(palette)]))
 
@@ -904,17 +929,21 @@ with tab4:
             "- マウスでドラッグし、株を囲んでください。**囲んだ範囲とマスク画像の重なり部分のみ**が株としてセグメンテーション抽出されます。"
         )
         max_canvas_width = 750
-        if orig_w > max_canvas_width:
+        if ndvi_w > max_canvas_width:
             canvas_width = max_canvas_width
-            canvas_height = int(orig_h * (max_canvas_width / orig_w))
+            canvas_height = int(ndvi_h * (max_canvas_width / ndvi_w))
         else:
-            canvas_width = orig_w
-            canvas_height = orig_h
+            canvas_width = ndvi_w
+            canvas_height = ndvi_h
 
         with st.expander("⚙️ 描画設定（描画モード・枠線の色や太さ）", expanded=True):
             c_draw1, c_draw2, c_draw3 = st.columns(3)
             with c_draw1:
-                draw_mode = st.selectbox("描画モード", ["rect", "freedraw"], format_func=lambda x: "四角形 (rect)" if x == "rect" else "フリーハンド (freedraw)")
+                draw_mode = st.selectbox(
+                    "描画モード",
+                    ["rect", "freedraw"],
+                    format_func=lambda x: "四角形 (rect)" if x == "rect" else "フリーハンド (freedraw)",
+                )
             with c_draw2:
                 stroke_color = st.color_picker("枠線・塗りつぶしの色", "#00FF00", key="stroke_color_picker")
             with c_draw3:
@@ -923,10 +952,9 @@ with tab4:
         rgb_color = hex_to_rgb(stroke_color)
         fill_color_rgba = f"rgba({rgb_color[0]}, {rgb_color[1]}, {rgb_color[2]}, 0.2)"
 
-        # 背景にはマスクを薄く重ねた画像を表示し、株の位置を見やすくする
         canvas_bg = Image.fromarray(
             render_overlay(
-                img_full_rgb,
+                ndvi_full_rgb,
                 analysis_mask,
                 None,
                 mask_color=selected_mask_color,
@@ -950,12 +978,11 @@ with tab4:
         if canvas_result.json_data is not None and "objects" in canvas_result.json_data:
             st.session_state["ndvi_objs"] = canvas_result.json_data["objects"]
 
-        scale_x = orig_w / canvas_width
-        scale_y = orig_h / canvas_height
+        scale_x = ndvi_w / canvas_width
+        scale_y = ndvi_h / canvas_height
 
-        for i, obj in enumerate(st.session_state.get("ndvi_objs", [])):
-            shape_mask = canvas_obj_to_mask(obj, orig_w, orig_h, scale_x, scale_y)
-            # マスク画像に従ってセグメンテーション的に切り出し
+        for obj in st.session_state.get("ndvi_objs", []):
+            shape_mask = canvas_obj_to_mask(obj, ndvi_w, ndvi_h, scale_x, scale_y)
             pmask = shape_mask & analysis_mask
             if np.any(pmask):
                 obj_stroke = obj.get("stroke", stroke_color)
@@ -968,10 +995,11 @@ with tab4:
     st.divider()
     st.subheader("抽出・解析結果 ＆ ZIPダウンロード")
 
-    annotated_arr = img_full_rgb.copy()
-    gray_full_ndvi = np.array(pil_full_img.convert("L"), dtype=np.float32)
+    annotated_arr = ndvi_full_rgb.copy()
+    gray_full_ndvi = np.array(pil_ndvi_img.convert("L"), dtype=np.float32)
 
     results = []
+    placed_label_boxes: List[Tuple[int, int, int, int]] = []
     zip_buffer = io.BytesIO()
 
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
@@ -989,37 +1017,52 @@ with tab4:
             ).astype(np.uint8)
 
             contours, _ = cv2.findContours(pmask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cv2.drawContours(annotated_arr, contours, -1, color_rgb, max(2, orig_w // 400))
+            cv2.drawContours(annotated_arr, contours, -1, color_rgb, max(2, ndvi_w // 400))
 
-            # 重心に株IDを描画
+            # 重心計算
             cx_pos = int(np.mean(xs))
             cy_pos = int(np.mean(ys))
-            font_scale = max(0.6, orig_w / 1000.0)
+
+            # 株と重ならない位置にラベルを配置
+            font_scale = max(0.55, ndvi_w / 1200.0)
             thickness = max(2, int(round(font_scale * 2)))
+            (tw, th), baseline = cv2.getTextSize(crop_id, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+            pad = 6
+            box_w = tw + pad * 2
+            box_h = th + baseline + pad * 2
+
+            lx1, ly1, lx2, ly2 = find_non_overlapping_label_box(
+                x1, y1, x2, y2,
+                cx_pos, cy_pos,
+                box_w, box_h,
+                ndvi_w, ndvi_h,
+                analysis_mask,
+                placed_label_boxes,
+            )
+            placed_label_boxes.append((lx1, ly1, lx2, ly2))
+
+            # ラベル枠から株重心への引き出し線
+            lcx = (lx1 + lx2) // 2
+            lcy = (ly1 + ly2) // 2
+            cv2.line(annotated_arr, (lcx, lcy), (cx_pos, cy_pos), color_rgb, max(1, thickness - 1), cv2.LINE_AA)
+
+            # ラベル背景とテキスト描画
+            cv2.rectangle(annotated_arr, (lx1, ly1), (lx2, ly2), (20, 20, 20), -1)
+            cv2.rectangle(annotated_arr, (lx1, ly1), (lx2, ly2), color_rgb, max(1, thickness - 1))
             cv2.putText(
                 annotated_arr,
                 crop_id,
-                (max(0, cx_pos - 60), cy_pos),
+                (lx1 + pad, ly1 + pad + th),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 font_scale,
                 (255, 255, 255),
-                thickness + 2,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                annotated_arr,
-                crop_id,
-                (max(0, cx_pos - 60), cy_pos),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                font_scale,
-                color_rgb,
                 thickness,
                 cv2.LINE_AA,
             )
 
             # セグメンテーション領域のみで個別株画像（背景黒抜き）を切り出し
-            masked_full = np.zeros_like(img_full_rgb)
-            masked_full[pmask] = img_full_rgb[pmask]
+            masked_full = np.zeros_like(ndvi_full_rgb)
+            masked_full[pmask] = ndvi_full_rgb[pmask]
             cropped_arr = masked_full[y1:y2, x1:x2]
             cropped_img = Image.fromarray(cropped_arr)
 
@@ -1061,7 +1104,7 @@ with tab4:
         st.success(f"✅ 検出・指定された株の数: **{valid_crop_count} 株**")
         st.dataframe(pd.DataFrame(results), use_container_width=True)
     else:
-        st.info("株がまだ検出・指定されていません。マスクを作成するか、範囲を描画してください。")
+        st.info("株がまだ検出・指定されていません。マスクを作成/アップロードするか、範囲を描画してください。")
 
     zip_buffer.seek(0)
     st.download_button(
