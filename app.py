@@ -427,6 +427,44 @@ def encode_png(img_array: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
+
+def freedraw_objs_to_mask(
+    objs: list,
+    img_w: int,
+    img_h: int,
+    scale_x: float,
+    scale_y: float,
+    default_brush: int,
+) -> np.ndarray:
+    """st_canvasのjson_data(freedraw path)から太さ付きのboolマスクを生成"""
+    mask_img = Image.new("L", (img_w, img_h), 0)
+    draw = ImageDraw.Draw(mask_img)
+
+    for obj in objs:
+        if obj.get("type") != "path" or "path" not in obj:
+            continue
+        stroke_w = max(1, int(round(obj.get("strokeWidth", default_brush) * scale_x)))
+        r = max(1, stroke_w // 2)
+        pts = []
+        for cmd in obj["path"]:
+            if not isinstance(cmd, (list, tuple)) or len(cmd) < 3:
+                continue
+            op = cmd[0]
+            if op in ("M", "L") and isinstance(cmd[1], (int, float)) and isinstance(cmd[2], (int, float)):
+                pts.append((int(round(cmd[1] * scale_x)), int(round(cmd[2] * scale_y))))
+            elif op == "Q" and len(cmd) >= 5:
+                pts.append((int(round(cmd[1] * scale_x)), int(round(cmd[2] * scale_y))))
+                pts.append((int(round(cmd[3] * scale_x)), int(round(cmd[4] * scale_y))))
+        if len(pts) >= 2:
+            draw.line(pts, fill=255, width=stroke_w)
+            for px, py in pts:
+                draw.ellipse([px - r, py - r, px + r, py + r], fill=255)
+        elif len(pts) == 1:
+            px, py = pts[0]
+            draw.ellipse([px - r, py - r, px + r, py + r], fill=255)
+
+    return np.array(mask_img, dtype=np.uint8) > 0
+
 def canvas_obj_to_mask(
     obj: dict,
     img_w: int,
@@ -822,15 +860,16 @@ with tab2:
                 key=f"sp_draw_canvas_{st.session_state.sp_canvas_ver}",
             )
 
-            if sp_draw_res.image_data is not None:
-                alpha_ch = sp_draw_res.image_data[:, :, 3]
-                if np.any(alpha_ch > 0):
-                    stroke_disp = (alpha_ch > 0).astype(np.uint8)
-                    stroke_work = cv2.resize(
-                        stroke_disp,
-                        (img_w, img_h),
-                        interpolation=cv2.INTER_NEAREST,
-                    ) > 0
+            if sp_draw_res.json_data is not None and len(sp_draw_res.json_data.get("objects", [])) > 0:
+                stroke_work = freedraw_objs_to_mask(
+                    sp_draw_res.json_data["objects"],
+                    img_w,
+                    img_h,
+                    img_w / float(disp_w),
+                    img_h / float(disp_h),
+                    brush_size,
+                )
+                if np.any(stroke_work):
 
                     if snap_to_sp:
                         touched_labels = np.unique(segments[stroke_work])
