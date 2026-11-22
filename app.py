@@ -26,7 +26,7 @@ pillow_heif.register_heif_opener()
 Image.MAX_IMAGE_PIXELS = 100_000_000
 
 st.set_page_config(
-    page_title="イチゴ株検出・NDVI解析 & セグメンテーションアプリ",
+    page_title="NDVI解析 & セグメンテーションアプリ",
     page_icon="🍓",
     layout="wide",
 )
