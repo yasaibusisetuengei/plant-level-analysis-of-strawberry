@@ -455,6 +455,8 @@ def freedraw_objs_to_mask(
             elif op == "Q" and len(cmd) >= 5:
                 pts.append((int(round(cmd[1] * scale_x)), int(round(cmd[2] * scale_y))))
                 pts.append((int(round(cmd[3] * scale_x)), int(round(cmd[4] * scale_y))))
+            elif op == "C" and len(cmd) >= 7:
+                pts.append((int(round(cmd[5] * scale_x)), int(round(cmd[6] * scale_y))))
         if len(pts) >= 2:
             draw.line(pts, fill=255, width=stroke_w)
             for px, py in pts:
@@ -595,6 +597,7 @@ def init_state():
         "ndvi_objs": [],
         "sp_canvas_ver": 0,
         "sp_applied_count": 0,
+        "sp_draw_objs": [],
         "last_image_source": None,
         "sp_n_segments": 250,
         "sp_compactness": 10.0,
@@ -743,6 +746,7 @@ with tab1:
             st.session_state.ndvi_objs = []
             st.session_state.sp_canvas_ver += 1
             st.session_state.sp_applied_count = 0
+            st.session_state.sp_draw_objs = []
         elif st.session_state.work_mask is None or st.session_state.work_mask.shape != (img_h, img_w):
             st.session_state.work_mask = hsv_mask.copy()
             st.session_state.last_click = None
@@ -767,6 +771,7 @@ with tab1:
             st.session_state.work_mask = hsv_mask.copy()
             st.session_state.sp_canvas_ver += 1
             st.session_state.sp_applied_count = 0
+            st.session_state.sp_draw_objs = []
             st.success("HSVマスクを「②スーパーピクセルで修正」に反映しました。")
 
 # 元解像度へ復元したマスクを準備
@@ -845,6 +850,7 @@ with tab2:
             if st.button("描画レイヤーをクリア", use_container_width=True):
                 st.session_state.sp_canvas_ver += 1
                 st.session_state.sp_applied_count = 0
+                st.session_state.sp_draw_objs = []
                 st.rerun()
             apply_brush_clicked = st.button("編集画面に適用", type="primary", use_container_width=True)
 
@@ -887,32 +893,46 @@ with tab2:
                 key=f"sp_draw_canvas_{st.session_state.sp_canvas_ver}",
             )
 
+            if sp_draw_res.json_data is not None and "objects" in sp_draw_res.json_data:
+                st.session_state.sp_draw_objs = sp_draw_res.json_data["objects"]
+
             if apply_brush_clicked:
-                objs = (sp_draw_res.json_data or {}).get("objects", []) if sp_draw_res.json_data else []
+                objs = st.session_state.get("sp_draw_objs", [])
                 if len(objs) > 0:
-                    stroke_work = freedraw_objs_to_mask(
-                        objs,
-                        img_w,
-                        img_h,
-                        img_w / float(disp_w),
-                        img_h / float(disp_h),
-                        brush_size,
-                    )
-                    if np.any(stroke_work):
+                    changed = False
+                    for obj in objs:
+                        stroke_work = freedraw_objs_to_mask(
+                            [obj],
+                            img_w,
+                            img_h,
+                            img_w / float(disp_w),
+                            img_h / float(disp_h),
+                            brush_size,
+                        )
+                        if not np.any(stroke_work):
+                            continue
                         if snap_to_sp:
                             touched_labels = np.unique(segments[stroke_work])
                             target_region = np.isin(segments, touched_labels)
                         else:
                             target_region = stroke_work
 
-                        if brush_action == "追加":
+                        obj_col = str(obj.get("stroke", "")).upper()
+                        if obj_col == "#00FF88":
                             st.session_state.work_mask[target_region] = True
-                        else:
+                        elif obj_col == "#FF3333":
                             st.session_state.work_mask[target_region] = False
+                        else:
+                            st.session_state.work_mask[target_region] = (brush_action == "追加")
+                        changed = True
 
+                    if changed:
                         st.session_state.sp_canvas_ver += 1
                         st.session_state.sp_applied_count = 0
+                        st.session_state.sp_draw_objs = []
                         st.rerun()
+                    else:
+                        st.warning("描画領域が取得できませんでした。もう一度描画してお試しください。")
                 else:
                     st.warning("編集画面にブラシで描画してから「編集画面に適用」を押してください。")
         else:
