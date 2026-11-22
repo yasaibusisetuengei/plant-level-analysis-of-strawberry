@@ -1100,14 +1100,39 @@ with tab3:
         (255, 255, 0),
         (100, 255, 180),
     ]
-    idx = 0
+
+    raw_components = []
+    heights = []
     for lbl in range(1, num_labels):
         area = int(stats[lbl, cv2.CC_STAT_AREA])
         if area >= min_plant_area:
-            idx += 1
-            crop_id = f"Strawberry_{idx:03d}"
             pmask = (labels_map == lbl) & analysis_mask
-            plant_masks.append((crop_id, pmask, palette[(idx - 1) % len(palette)]))
+            ys, xs = np.where(pmask)
+            if len(xs) == 0:
+                continue
+            y1, y2 = int(ys.min()), int(ys.max()) + 1
+            cx_pos = int(np.mean(xs))
+            cy_pos = int(np.mean(ys))
+            heights.append(y2 - y1)
+            raw_components.append((cy_pos, cx_pos, pmask))
+
+    # 左上から右下にかけて番号が振られるように行バンド×X座標でソート
+    if raw_components:
+        row_tol = max(40, int(np.median(heights) * 0.6))
+        raw_components.sort(key=lambda item: (item[0] // row_tol, item[1]))
+
+    for idx, (_, _, pmask) in enumerate(raw_components, start=1):
+        crop_id = f"Strawberry_{idx:03d}"
+        plant_masks.append((crop_id, pmask, palette[(idx - 1) % len(palette)]))
+
+    # NDVI画像が白黒画像（グレースケール）かどうか判定（NDVIアップロードまたはサンプル使用時のみ計算）
+    has_ndvi_source = (ndvi_uploaded is not None) or using_sample
+    ch0 = ndvi_full_rgb[:, :, 0].astype(np.int16)
+    ch1 = ndvi_full_rgb[:, :, 1].astype(np.int16)
+    ch2 = ndvi_full_rgb[:, :, 2].astype(np.int16)
+    is_bw_ndvi = has_ndvi_source and (
+        int(np.max(np.abs(ch0 - ch1))) <= 15 and int(np.max(np.abs(ch1 - ch2))) <= 15
+    )
 
     # -------------------------------------------------------------------------
     # 解析結果の描画・集計・ZIP作成
@@ -1185,21 +1210,15 @@ with tab3:
             zip_file.writestr(f"{crop_id}.png", crop_byte_arr.getvalue())
 
             plant_pixels = int(np.sum(pmask))
-            bbox_area = (x2 - x1) * (y2 - y1)
-            veg_ratio = (plant_pixels / bbox_area) * 100.0 if bbox_area > 0 else 0.0
-            mean_ndvi_idx = float(np.mean(gray_full_ndvi[pmask]) / 255.0)
+            if is_bw_ndvi:
+                mean_ndvi_idx = round(float(np.mean(gray_full_ndvi[pmask] / 255.0)), 3)
+            else:
+                mean_ndvi_idx = None
 
             results.append({
                 "株ID": crop_id,
-                "株面積 (px)": plant_pixels,
-                "枠内植生割合 (%)": round(veg_ratio, 2),
-                "平均NDVI指標": round(mean_ndvi_idx, 3),
-                "重心X": cx_pos,
-                "重心Y": cy_pos,
-                "X1": x1,
-                "Y1": y1,
-                "X2": x2,
-                "Y2": y2,
+                "株面積(px)": plant_pixels,
+                "平均NDVI指標": mean_ndvi_idx,
             })
 
         annotated_byte_arr = io.BytesIO()
