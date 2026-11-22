@@ -595,6 +595,7 @@ def init_state():
         "ndvi_objs": [],
         "sp_canvas_ver": 0,
         "sp_applied_count": 0,
+        "last_image_source": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -644,6 +645,15 @@ else:
         st.stop()
 
 file_key = f"{file_name}_{len(file_bytes)}"
+
+if st.session_state.last_image_source != image_source:
+    st.session_state.last_image_source = image_source
+    if using_sample:
+        st.session_state.h_min = 139
+        st.session_state.h_max = 173
+        st.session_state.s_range = (70, 255)
+        st.session_state.v_range = (50, 255)
+        st.session_state.wheel_sync_id += 1
 
 with st.spinner("画像を読み込んでいます..."):
     img_full_rgb = load_image_rgb(file_bytes, file_name)
@@ -870,31 +880,34 @@ with tab2:
                 key=f"sp_draw_canvas_{st.session_state.sp_canvas_ver}",
             )
 
-            objs = (sp_draw_res.json_data or {}).get("objects", []) if sp_draw_res.json_data else []
-            if len(objs) > st.session_state.sp_applied_count:
-                new_objs = objs[st.session_state.sp_applied_count :]
-                stroke_work = freedraw_objs_to_mask(
-                    new_objs,
-                    img_w,
-                    img_h,
-                    img_w / float(disp_w),
-                    img_h / float(disp_h),
-                    brush_size,
-                )
-                st.session_state.sp_applied_count = len(objs)
-                if np.any(stroke_work):
-                    if snap_to_sp:
-                        touched_labels = np.unique(segments[stroke_work])
-                        target_region = np.isin(segments, touched_labels)
-                    else:
-                        target_region = stroke_work
+            if st.button("編集画面に適用", type="primary", use_container_width=True):
+                objs = (sp_draw_res.json_data or {}).get("objects", []) if sp_draw_res.json_data else []
+                if len(objs) > 0:
+                    stroke_work = freedraw_objs_to_mask(
+                        objs,
+                        img_w,
+                        img_h,
+                        img_w / float(disp_w),
+                        img_h / float(disp_h),
+                        brush_size,
+                    )
+                    if np.any(stroke_work):
+                        if snap_to_sp:
+                            touched_labels = np.unique(segments[stroke_work])
+                            target_region = np.isin(segments, touched_labels)
+                        else:
+                            target_region = stroke_work
 
-                    if brush_action == "追加":
-                        st.session_state.work_mask[target_region] = True
-                    else:
-                        st.session_state.work_mask[target_region] = False
+                        if brush_action == "追加":
+                            st.session_state.work_mask[target_region] = True
+                        else:
+                            st.session_state.work_mask[target_region] = False
 
-                    st.rerun()
+                        st.session_state.sp_canvas_ver += 1
+                        st.session_state.sp_applied_count = 0
+                        st.rerun()
+                else:
+                    st.warning("編集画面にブラシで描画してから「編集画面に適用」を押してください。")
         else:
             coord_kwargs = {"key": "sp_canvas"}
             if "use_column_width" in inspect.signature(streamlit_image_coordinates).parameters:
@@ -1000,125 +1013,52 @@ with tab3:
             else:
                 analysis_mask = export_mask
 
-    seg_mode = st.radio(
-        "株の指定方法",
-        [
-            "マスクの連結領域から自動セグメンテーション",
-            "手動で囲んでマスク領域を切り出し（四角形 / フリーハンド）",
-        ],
-        horizontal=True,
-    )
-
     plant_masks = []
     pil_ndvi_img = Image.fromarray(ndvi_full_rgb)
 
-    if seg_mode == "マスクの連結領域から自動セグメンテーション":
-        col_s1, col_s2 = st.columns(2)
-        with col_s1:
-            min_plant_area = st.slider(
-                "株として検出する最小面積 (px)",
-                min_value=50,
-                max_value=50000,
-                value=500,
-                step=50,
-            )
-        with col_s2:
-            erode_size = st.slider(
-                "隣接株の分離（収縮カーネルサイズ）",
-                min_value=0,
-                max_value=21,
-                value=0,
-                step=2,
-                help="株同士がくっついている場合に大きくすると分離しやすくなります。",
-            )
-
-        seg_input = analysis_mask.astype(np.uint8) * 255
-        if erode_size >= 3:
-            kernel = np.ones((erode_size, erode_size), np.uint8)
-            seg_input = cv2.morphologyEx(seg_input, cv2.MORPH_OPEN, kernel)
-
-        num_labels, labels_map, stats, _ = cv2.connectedComponentsWithStats(seg_input)
-        palette = [
-            (0, 255, 0),
-            (0, 200, 255),
-            (255, 165, 0),
-            (255, 0, 255),
-            (255, 255, 0),
-            (100, 255, 180),
-        ]
-        idx = 0
-        for lbl in range(1, num_labels):
-            area = int(stats[lbl, cv2.CC_STAT_AREA])
-            if area >= min_plant_area:
-                idx += 1
-                crop_id = f"Strawberry_{idx:03d}"
-                pmask = (labels_map == lbl) & analysis_mask
-                plant_masks.append((crop_id, pmask, palette[(idx - 1) % len(palette)]))
-
-    else:
-        st.markdown(
-            "- マウスでドラッグし、株を囲んでください。**囲んだ範囲とマスク画像の重なり部分のみ**が株としてセグメンテーション抽出されます。"
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        default_min_area = 5000 if using_sample else 500
+        min_plant_area = st.slider(
+            "株として検出する最小面積 (px)",
+            min_value=50,
+            max_value=50000,
+            value=default_min_area,
+            step=50,
+            key=f"min_plant_area_{using_sample}",
         )
-        max_canvas_width = 750
-        if ndvi_w > max_canvas_width:
-            canvas_width = max_canvas_width
-            canvas_height = int(ndvi_h * (max_canvas_width / ndvi_w))
-        else:
-            canvas_width = ndvi_w
-            canvas_height = ndvi_h
-
-        with st.expander("⚙️ 描画設定（描画モード・枠線の色や太さ）", expanded=True):
-            c_draw1, c_draw2, c_draw3 = st.columns(3)
-            with c_draw1:
-                draw_mode = st.selectbox(
-                    "描画モード",
-                    ["rect", "freedraw"],
-                    format_func=lambda x: "四角形 (rect)" if x == "rect" else "フリーハンド (freedraw)",
-                )
-            with c_draw2:
-                stroke_color = st.color_picker("枠線・塗りつぶしの色", "#00FF00", key="stroke_color_picker")
-            with c_draw3:
-                stroke_width = st.slider("枠線の太さ", 1, 5, 2, key="stroke_width_slider")
-
-        rgb_color = hex_to_rgb(stroke_color)
-        fill_color_rgba = f"rgba({rgb_color[0]}, {rgb_color[1]}, {rgb_color[2]}, 0.2)"
-
-        canvas_bg = Image.fromarray(
-            render_overlay(
-                ndvi_full_rgb,
-                analysis_mask,
-                None,
-                mask_color=selected_mask_color,
-                mask_alpha=0.35,
-                show_boundaries=False,
-            )
+    with col_s2:
+        erode_size = st.slider(
+            "隣接株の分離（収縮カーネルサイズ）",
+            min_value=0,
+            max_value=21,
+            value=0,
+            step=2,
+            help="株同士がくっついている場合に大きくすると分離しやすくなります。",
         )
 
-        canvas_result = st_canvas(
-            fill_color=fill_color_rgba,
-            stroke_width=stroke_width,
-            stroke_color=stroke_color,
-            background_image=canvas_bg,
-            update_streamlit=True,
-            drawing_mode=draw_mode,
-            width=canvas_width,
-            height=canvas_height,
-            key="canvas_strawberry",
-        )
+    seg_input = analysis_mask.astype(np.uint8) * 255
+    if erode_size >= 3:
+        kernel = np.ones((erode_size, erode_size), np.uint8)
+        seg_input = cv2.morphologyEx(seg_input, cv2.MORPH_OPEN, kernel)
 
-        if canvas_result.json_data is not None and "objects" in canvas_result.json_data:
-            st.session_state["ndvi_objs"] = canvas_result.json_data["objects"]
-
-        scale_x = ndvi_w / canvas_width
-        scale_y = ndvi_h / canvas_height
-
-        for obj in st.session_state.get("ndvi_objs", []):
-            shape_mask = canvas_obj_to_mask(obj, ndvi_w, ndvi_h, scale_x, scale_y)
-            pmask = shape_mask & analysis_mask
-            if np.any(pmask):
-                obj_stroke = obj.get("stroke", stroke_color)
-                rect_rgb = parse_color_to_rgb(obj_stroke, rgb_color)
-                plant_masks.append((f"Strawberry_{len(plant_masks) + 1:03d}", pmask, rect_rgb))
+    num_labels, labels_map, stats, _ = cv2.connectedComponentsWithStats(seg_input)
+    palette = [
+        (0, 255, 0),
+        (0, 200, 255),
+        (255, 165, 0),
+        (255, 0, 255),
+        (255, 255, 0),
+        (100, 255, 180),
+    ]
+    idx = 0
+    for lbl in range(1, num_labels):
+        area = int(stats[lbl, cv2.CC_STAT_AREA])
+        if area >= min_plant_area:
+            idx += 1
+            crop_id = f"Strawberry_{idx:03d}"
+            pmask = (labels_map == lbl) & analysis_mask
+            plant_masks.append((crop_id, pmask, palette[(idx - 1) % len(palette)]))
 
     # -------------------------------------------------------------------------
     # 解析結果の描画・集計・ZIP作成
