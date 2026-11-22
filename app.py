@@ -26,7 +26,7 @@ pillow_heif.register_heif_opener()
 Image.MAX_IMAGE_PIXELS = 100_000_000
 
 st.set_page_config(
-    page_title="イチゴ株検出・NDVI解析 & セグメンテーションアプリ",
+    page_title="NDVI解析 & セグメンテーションアプリ",
     page_icon="🍓",
     layout="wide",
 )
@@ -1118,7 +1118,7 @@ def render_tab3_ndvi(
 def main():
     init_state()
 
-    st.title("🍓 イチゴ株検出・NDVI解析 & セグメンテーションアプリ")
+    st.title("NDVI解析 & セグメンテーションアプリ")
     st.caption(
         "①HSVと②スーパーピクセルでマスク画像を作成・ダウンロードし、③でNDVI画像とマスク画像を用いた株ごとのセグメンテーション解析が行えます。"
     )
