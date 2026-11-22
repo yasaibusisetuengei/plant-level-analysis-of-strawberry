@@ -26,7 +26,7 @@ pillow_heif.register_heif_opener()
 Image.MAX_IMAGE_PIXELS = 100_000_000
 
 st.set_page_config(
-    page_title="NDVI解析 & セグメンテーションアプリ",
+    page_title="イチゴ株検出・NDVI解析 & セグメンテーションアプリ",
     page_icon="🍓",
     layout="wide",
 )
@@ -706,6 +706,7 @@ def render_tab2_superpixel(
             ["スーパーピクセルをクリック（反転）", "直接描いて修正（ブラシ）"],
         )
 
+        show_boundaries = st.checkbox("スーパーピクセル境界線を表示", key="sp_show_boundaries")
         st.divider()
         if edit_method == "スーパーピクセルをクリック（反転）":
             st.markdown("**スーパーピクセルの操作**")
@@ -724,7 +725,6 @@ def render_tab2_superpixel(
                 step=1.0,
                 key="sp_compactness",
             )
-            show_boundaries = st.checkbox("スーパーピクセル境界線を表示", key="sp_show_boundaries")
             brush_radius = st.slider(
                 "まとめてピクセルを選択",
                 min_value=0,
@@ -736,7 +736,6 @@ def render_tab2_superpixel(
         else:
             n_segments = st.session_state.sp_n_segments
             compactness = st.session_state.sp_compactness
-            show_boundaries = st.session_state.sp_show_boundaries
 
             st.markdown("**ブラシの操作**")
             brush_action = st.radio("ブラシ操作", ["追加", "消去"], horizontal=True)
@@ -1119,7 +1118,7 @@ def render_tab3_ndvi(
 def main():
     init_state()
 
-    st.title("NDVI解析 & セグメンテーションアプリ")
+    st.title("🍓 イチゴ株検出・NDVI解析 & セグメンテーションアプリ")
     st.caption(
         "①HSVと②スーパーピクセルでマスク画像を作成・ダウンロードし、③でNDVI画像とマスク画像を用いた株ごとのセグメンテーション解析が行えます。"
     )
