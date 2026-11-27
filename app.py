@@ -46,7 +46,20 @@ SAMPLE_NDVI_RAW_URL = "https://raw.githubusercontent.com/yasaibusisetuengei/plan
 SAMPLE_MASK_NAME = "IMG_3715_mask.png"
 SAMPLE_MASK_RAW_URL = "https://raw.githubusercontent.com/yasaibusisetuengei/plant-level-analysis-of-strawberry/main/IMG_3715_mask.png"
 
+def _cache_data(**kwargs):
+    if st.runtime.exists():
+        return st.cache_data(**kwargs)
+    return lambda fn: fn
+
+
+def _cache_resource(**kwargs):
+    if st.runtime.exists():
+        return st.cache_resource(**kwargs)
+    return lambda fn: fn
+
+
 COLOR_PRESETS = {
+    "イチゴNDVI用": ((139, 173), (70, 255), (50, 255)),
     "緑": ((35, 85), (40, 255), (40, 255)),
     "赤": ((170, 10), (70, 255), (50, 255)),
     "青": ((95, 130), (50, 255), (50, 255)),
@@ -270,7 +283,7 @@ HUE_WHEEL_HTML = """<!DOCTYPE html>
 """
 
 
-@st.cache_resource
+@_cache_resource()
 def get_hue_wheel_component():
     # 安全な専用一時ディレクトリ（パーミッション0700）を作成
     comp_dir = tempfile.mkdtemp(prefix="st_hue_wheel_")
@@ -301,7 +314,7 @@ def sanitize_csv_cell(val):
     return val
 
 
-@st.cache_data(show_spinner=False)
+@_cache_data(show_spinner=False)
 def download_url_bytes(url: str) -> bytes:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https" or parsed.netloc not in ALLOWED_URL_HOSTS:
@@ -315,7 +328,7 @@ def download_url_bytes(url: str) -> bytes:
     return data
 
 
-@st.cache_data(show_spinner=False)
+@_cache_data(show_spinner=False)
 def load_repo_or_url_bytes(filename: str, raw_url: str) -> bytes:
     safe_name = os.path.basename(filename)
     app_dir = os.path.dirname(os.path.abspath(__file__))
@@ -328,7 +341,7 @@ def load_repo_or_url_bytes(filename: str, raw_url: str) -> bytes:
     return download_url_bytes(raw_url)
 
 
-@st.cache_data(show_spinner=False)
+@_cache_data(show_spinner=False)
 def load_image_rgb(file_bytes: bytes, filename: str) -> np.ndarray:
     if len(file_bytes) > MAX_UPLOAD_BYTES:
         raise ValueError("ファイルサイズが上限(100MB)を超えています。")
@@ -360,7 +373,7 @@ def load_image_rgb(file_bytes: bytes, filename: str) -> np.ndarray:
 # ------------------------------------------------------------
 # 画像処理・マスク演算関数
 # ------------------------------------------------------------
-@st.cache_data(show_spinner=False)
+@_cache_data(show_spinner=False)
 def downscale_for_work(img_rgb: np.ndarray, max_side: int) -> np.ndarray:
     h, w = img_rgb.shape[:2]
     if max(h, w) <= max_side:
@@ -371,7 +384,7 @@ def downscale_for_work(img_rgb: np.ndarray, max_side: int) -> np.ndarray:
     return cv2.resize(img_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 
-@st.cache_data(show_spinner=False)
+@_cache_data(show_spinner=False)
 def compute_superpixels(
     img_rgb: np.ndarray,
     n_segments: int,
@@ -582,11 +595,12 @@ def init_state():
         "file_key": None,
         "work_mask": None,
         "last_click": None,
-        "last_preset": "緑",
-        "h_min": 35,
-        "h_max": 85,
-        "s_range": (40, 255),
-        "v_range": (40, 255),
+        "last_preset": "イチゴNDVI用",
+        "color_preset_select": "イチゴNDVI用",
+        "h_min": 139,
+        "h_max": 173,
+        "s_range": (70, 255),
+        "v_range": (50, 255),
         "wheel_sync_id": 0,
         "last_wheel_val": None,
         "sp_canvas_ver": 0,
@@ -610,7 +624,7 @@ def render_tab1_hsv(img_rgb: np.ndarray, file_key: str) -> Tuple[int, int, int]:
 
     with col1_ctrl:
         st.subheader("設定")
-        preset = st.selectbox("色プリセット", list(COLOR_PRESETS.keys()))
+        preset = st.selectbox("色プリセット", list(COLOR_PRESETS.keys()), key="color_preset_select")
 
         if preset != st.session_state.last_preset:
             st.session_state.last_preset = preset
@@ -1160,6 +1174,8 @@ def main():
     if st.session_state.last_image_source != image_source:
         st.session_state.last_image_source = image_source
         if using_sample:
+            st.session_state.color_preset_select = "イチゴNDVI用"
+            st.session_state.last_preset = "イチゴNDVI用"
             st.session_state.h_min = 139
             st.session_state.h_max = 173
             st.session_state.s_range = (70, 255)
